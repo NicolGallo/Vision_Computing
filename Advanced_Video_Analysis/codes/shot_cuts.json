@@ -1,0 +1,13 @@
+{
+  "video": "vfencing.mp4",
+  "cuts": [
+    9,
+    45,
+    75,
+    140
+  ],
+  "params": {
+    "mse_thresh": 500.0,
+    "flow_thresh": 4.0
+  }
+}
