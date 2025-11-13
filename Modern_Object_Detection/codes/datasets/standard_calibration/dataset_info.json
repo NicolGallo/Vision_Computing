@@ -1,0 +1,13 @@
+{
+  "image_size": [
+    640,
+    480
+  ],
+  "pattern_size": [
+    9,
+    6
+  ],
+  "square_size": 25.0,
+  "n_images": 0,
+  "image_files": []
+}
