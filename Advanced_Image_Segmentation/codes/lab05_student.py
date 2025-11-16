@@ -482,25 +482,34 @@ class MiniSAM(nn.Module):
         #    Crear proyección de 576 -> embed_dim (ej. 256)
         self.img_proj = nn.Conv2d(576, embed_dim, kernel_size=1)
 
-
-        
-        # TODO Task 3.2: Create prompt encoders
+        # Task 3.2: Create prompt encoders
         # Point type embedding:
         # 1. nn.Embedding(2, embed_dim) - 2 types: foreground (1) and background (0)
+        self.point_type_embed = nn.Embedding(2, embed_dim)
         
         # Point position embedding:
         # 2. Create nn.Sequential with:
         #    - nn.Linear(2, 128) - Input is (x, y) coordinates
         #    - nn.ReLU()
         #    - nn.Linear(128, embed_dim)
+        self.point_pos_embed = nn.Sequential(
+            nn.Linear(2, 128),
+            nn.ReLU(),
+            nn.Linear(128, embed_dim)
+        )
         
         # Box embedding:
         # 3. Create nn.Sequential with:
         #    - nn.Linear(4, 128) - Input is (x1, y1, x2, y2)
         #    - nn.ReLU()
         #    - nn.Linear(128, embed_dim)
+        self.box_embed = nn.Sequential(
+            nn.Linear(4, 128),
+            nn.ReLU(),
+            nn.Linear(128, embed_dim)
+        )
         
-        # TODO Task 3.3: Create decoder
+        # Task 3.3: Create decoder
         # 1. Create nn.Sequential with:
         #    - nn.Conv2d(embed_dim * 2, 256, 3, padding=1) - Image + prompt features
         #    - nn.BatchNorm2d(256)
@@ -511,10 +520,22 @@ class MiniSAM(nn.Module):
         #    - nn.Conv2d(128, 64, 3, padding=1)
         #    - nn.BatchNorm2d(64)
         #    - nn.ReLU()
+        self.decoder = nn.Sequential(
+            nn.Conv2d(embed_dim * 2, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU()
+        )
         
-        # TODO Task 3.3: Create output heads
+        # Task 3.3: Create output heads
         # Mask head:
         # 1. nn.Conv2d(64, n_classes, 1)
+        self.mask_head = nn.Conv2d(64, n_classes, kernel_size=1)
         
         # IoU prediction head:
         # 2. Create nn.Sequential with:
@@ -522,20 +543,28 @@ class MiniSAM(nn.Module):
         #    - nn.Flatten()
         #    - nn.Linear(64, 1)
         #    - nn.Sigmoid()
+        self.iou_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
         
         # Upsampling:
         # 3. nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False)
-        
-        pass
+        self.upsample = nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False)
         
     def encode_image(self, x):
         """Extract image features"""
-        # TODO Task 3.4: Encode image
+        # Task 3.4: Encode image
         # 1. features = self.image_encoder(x) - Output: B x 576 x H/8 x W/8
-        # 2. features = self.img_proj(features) - Output: B x embed_dim x H/8 x W/8
-        # 3. Return features
+        features = self.image_encoder(x)
         
-        pass
+        # 2. features = self.img_proj(features) - Output: B x embed_dim x H/8 x W/8
+        features = self.img_proj(features)
+        
+        # 3. Return features
+        return features
     
     def encode_prompts(self, points=None, point_labels=None, boxes=None, img_size=None):
         """
@@ -548,31 +577,63 @@ class MiniSAM(nn.Module):
         Returns:
             prompt_features: (B, embed_dim, H/8, W/8)
         """
-        # TODO Task 3.4: Encode prompts
+        # Task 3.4: Encode prompts
         # 1. Get batch size B from points or boxes
+        if points is not None:
+            B = points.shape[0]
+        elif boxes is not None:
+            B = boxes.shape[0]
+        else:
+            raise ValueError("Either points or boxes must be provided")
+        
         # 2. Get H, W from img_size
+        H, W = img_size
+        
         # 3. Create empty list: prompt_features = []
+        prompt_features = []
         
         # IF POINTS PROVIDED:
-        # 4. pos_enc = self.point_pos_embed(points) - Shape: B x N x embed_dim
-        # 5. type_enc = self.point_type_embed(point_labels) - Shape: B x N x embed_dim
-        # 6. point_enc = pos_enc + type_enc
-        # 7. point_enc = point_enc.mean(dim=1, keepdim=True) - Average over N points
-        # 8. Append point_enc to prompt_features
+        if points is not None:
+            # 4. pos_enc = self.point_pos_embed(points) - Shape: B x N x embed_dim
+            pos_enc = self.point_pos_embed(points)
+            
+            # 5. type_enc = self.point_type_embed(point_labels) - Shape: B x N x embed_dim
+            type_enc = self.point_type_embed(point_labels)
+            
+            # 6. point_enc = pos_enc + type_enc
+            point_enc = pos_enc + type_enc
+            
+            # 7. point_enc = point_enc.mean(dim=1, keepdim=True) - Average over N points
+            point_enc = point_enc.mean(dim=1, keepdim=True)
+            
+            # 8. Append point_enc to prompt_features
+            prompt_features.append(point_enc)
         
         # IF BOXES PROVIDED:
-        # 9. box_enc = self.box_embed(boxes).unsqueeze(1) - Shape: B x 1 x embed_dim
-        # 10. Append box_enc to prompt_features
+        if boxes is not None:
+            # 9. box_enc = self.box_embed(boxes).unsqueeze(1) - Shape: B x 1 x embed_dim
+            box_enc = self.box_embed(boxes).unsqueeze(1)
+            
+            # 10. Append box_enc to prompt_features
+            prompt_features.append(box_enc)
         
         # COMBINE PROMPTS:
         # 11. If prompt_features not empty:
-        #     - Concatenate along dim=1 and take mean: prompt_enc = torch.cat(...).mean(dim=1)
-        #     - Reshape to (B, embed_dim, 1, 1)
-        #     - Expand to (B, embed_dim, H//8, W//8)
+        if prompt_features:
+            #     - Concatenate along dim=1 and take mean: prompt_enc = torch.cat(...).mean(dim=1)
+            prompt_enc = torch.cat(prompt_features, dim=1).mean(dim=1)
+            
+            #     - Reshape to (B, embed_dim, 1, 1)
+            prompt_enc = prompt_enc.view(B, self.embed_dim, 1, 1)
+            
+            #     - Expand to (B, embed_dim, H//8, W//8)
+            prompt_enc = prompt_enc.expand(B, self.embed_dim, H // 8, W // 8)
         # 12. Else: create zero tensor of shape (B, embed_dim, H//8, W//8)
-        # 13. Return prompt_enc
+        else:
+            prompt_enc = torch.zeros(B, self.embed_dim, H // 8, W // 8, device=points.device if points is not None else boxes.device)
         
-        pass
+        # 13. Return prompt_enc
+        return prompt_enc
     
     def forward(self, images, points=None, point_labels=None, boxes=None):
         """
@@ -586,31 +647,39 @@ class MiniSAM(nn.Module):
             mask_logits: B x n_classes x H x W
             iou_pred: B x 1
         """
-        # TODO Task 3.4: Implement forward pass
+        # Task 3.4: Implement forward pass
         # 1. Get B, C, H, W = images.shape
+        B, C, H, W = images.shape
         
         # ENCODE IMAGE:
         # 2. img_features = self.encode_image(images)
+        img_features = self.encode_image(images)
         
         # ENCODE PROMPTS:
         # 3. prompt_features = self.encode_prompts(points, point_labels, boxes, img_size=(H, W))
+        prompt_features = self.encode_prompts(points, point_labels, boxes, img_size=(H, W))
         
         # FUSE FEATURES:
         # 4. fused = torch.cat([img_features, prompt_features], dim=1)
+        fused = torch.cat([img_features, prompt_features], dim=1)
         
         # DECODE:
         # 5. decoded = self.decoder(fused)
+        decoded = self.decoder(fused)
         
         # OUTPUT MASK:
         # 6. mask_logits = self.mask_head(decoded)
+        mask_logits = self.mask_head(decoded)
+        
         # 7. mask_logits = self.upsample(mask_logits)
+        mask_logits = self.upsample(mask_logits)
         
         # PREDICT IoU:
         # 8. iou_pred = self.iou_head(decoded)
+        iou_pred = self.iou_head(decoded)
         
         # 9. Return mask_logits, iou_pred
-        
-        pass
+        return mask_logits, iou_pred
 
 
 def sample_points_from_mask(masks, n_points=5):
@@ -623,39 +692,85 @@ def sample_points_from_mask(masks, n_points=5):
         points: (B, n_points, 2) normalized coordinates
         labels: (B, n_points) with 0=bg, 1=fg
     """
-    # TODO Task 3.5: Implement point sampling
+    # Task 3.5: Implement point sampling
     # 1. Get B, H, W = masks.shape
+    B, H, W = masks.shape
+    
     # 2. Create empty lists: points_list = [], labels_list = []
+    points_list = []
+    labels_list = []
     
     # FOR EACH IMAGE IN BATCH:
     # 3. For b in range(B):
-    #    - Get mask = masks[b]
-    
-    #    SAMPLE FOREGROUND POINTS (50%):
-    #    4. fg_indices = torch.nonzero(mask > 0) - Find all foreground pixels
-    #    5. If fg_indices not empty:
-    #       - Randomly sample n_points//2 indices
-    #       - Normalize to [0,1]: divide by [H, W]
-    #       - Create labels as ones
-    #    6. Else: create empty tensors
-    
-    #    SAMPLE BACKGROUND POINTS (50%):
-    #    7. bg_indices = torch.nonzero(mask == 0) - Find all background pixels
-    #    8. If bg_indices not empty:
-    #       - Randomly sample n_points//2 indices
-    #       - Normalize to [0,1]: divide by [H, W]
-    #       - Create labels as zeros
-    #    9. Else: create empty tensors
-    
-    #    COMBINE AND PAD:
-    #    10. Concatenate fg_points and bg_points
-    #    11. Concatenate fg_labels and bg_labels
-    #    12. If total points < n_points: pad with zeros
-    #    13. Append to lists
+    for b in range(B):
+        #    - Get mask = masks[b]
+        mask = masks[b]
+        
+        #    SAMPLE FOREGROUND POINTS (50%):
+        #    4. fg_indices = torch.nonzero(mask > 0) - Find all foreground pixels
+        fg_indices = torch.nonzero(mask > 0, as_tuple=False)
+        
+        #    5. If fg_indices not empty:
+        if len(fg_indices) > 0:
+            #       - Randomly sample n_points//2 indices
+            n_fg = n_points // 2
+            sampled_idx = torch.randint(0, len(fg_indices), (n_fg,))
+            fg_points = fg_indices[sampled_idx].float()
+            
+            #       - Normalize to [0,1]: divide by [H, W]
+            fg_points[:, 0] /= H
+            fg_points[:, 1] /= W
+            
+            #       - Create labels as ones
+            fg_labels = torch.ones(n_fg, dtype=torch.long, device=masks.device)
+        #    6. Else: create empty tensors
+        else:
+            fg_points = torch.zeros(0, 2, device=masks.device)
+            fg_labels = torch.zeros(0, dtype=torch.long, device=masks.device)
+        
+        #    SAMPLE BACKGROUND POINTS (50%):
+        #    7. bg_indices = torch.nonzero(mask == 0) - Find all background pixels
+        bg_indices = torch.nonzero(mask == 0, as_tuple=False)
+        
+        #    8. If bg_indices not empty:
+        if len(bg_indices) > 0:
+            #       - Randomly sample n_points//2 indices
+            n_bg = n_points - (n_points // 2)  # Remaining points
+            sampled_idx = torch.randint(0, len(bg_indices), (n_bg,))
+            bg_points = bg_indices[sampled_idx].float()
+            
+            #       - Normalize to [0,1]: divide by [H, W]
+            bg_points[:, 0] /= H
+            bg_points[:, 1] /= W
+            
+            #       - Create labels as zeros
+            bg_labels = torch.zeros(n_bg, dtype=torch.long, device=masks.device)
+        #    9. Else: create empty tensors
+        else:
+            bg_points = torch.zeros(0, 2, device=masks.device)
+            bg_labels = torch.zeros(0, dtype=torch.long, device=masks.device)
+        
+        #    COMBINE AND PAD:
+        #    10. Concatenate fg_points and bg_points
+        combined_points = torch.cat([fg_points, bg_points], dim=0)
+        
+        #    11. Concatenate fg_labels and bg_labels
+        combined_labels = torch.cat([fg_labels, bg_labels], dim=0)
+        
+        #    12. If total points < n_points: pad with zeros
+        if len(combined_points) < n_points:
+            pad_size = n_points - len(combined_points)
+            pad_points = torch.zeros(pad_size, 2, device=masks.device)
+            pad_labels = torch.zeros(pad_size, dtype=torch.long, device=masks.device)
+            combined_points = torch.cat([combined_points, pad_points], dim=0)
+            combined_labels = torch.cat([combined_labels, pad_labels], dim=0)
+        
+        #    13. Append to lists
+        points_list.append(combined_points)
+        labels_list.append(combined_labels)
     
     # 14. Stack lists and return torch.stack(points_list), torch.stack(labels_list)
-    
-    pass
+    return torch.stack(points_list), torch.stack(labels_list)
 
 
 # ================== Loss Functions ==================
@@ -890,24 +1005,53 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
     total_loss = 0
     total_miou = 0
     
-    # TODO Task 5.2: Implement Mini-SAM training
+    # Task 5.2: Implement Mini-SAM training
     # 1. For images, masks in dataloader:
-    # 2. Move to device
-    # 3. Sample points from masks: points, point_labels = sample_points_from_mask(masks, n_points)
-    # 4. Zero gradients
-    # 5. Forward pass: mask_logits, iou_pred = model(images, points, point_labels)
-    # 6. Compute losses:
-    #    - ce_loss = F.cross_entropy(mask_logits, masks)
-    #    - dice_loss = DiceLoss()(mask_logits, masks)
-    #    - pred_masks = mask_logits.argmax(dim=1)
-    #    - true_iou = compute_batch_iou(pred_masks, masks)
-    #    - iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
-    # 7. Combined loss: loss = ce_loss + dice_loss + 0.1 * iou_loss
-    # 8. Backward and update
-    # 9. Calculate metrics
-    # 10. Return averages
+    for images, masks in tqdm(dataloader, desc='Training Mini-SAM'):
+        # 2. Move to device
+        images, masks = images.to(device), masks.to(device)
+        
+        # 3. Sample points from masks: points, point_labels = sample_points_from_mask(masks, n_points)
+        points, point_labels = sample_points_from_mask(masks, n_points)
+        
+        # 4. Zero gradients
+        optimizer.zero_grad()
+        
+        # 5. Forward pass: mask_logits, iou_pred = model(images, points, point_labels)
+        mask_logits, iou_pred = model(images, points, point_labels)
+        
+        # 6. Compute losses:
+        #    - ce_loss = F.cross_entropy(mask_logits, masks)
+        ce_loss = F.cross_entropy(mask_logits, masks)
+        
+        #    - dice_loss = DiceLoss()(mask_logits, masks)
+        dice_loss = DiceLoss()(mask_logits, masks)
+        
+        #    - pred_masks = mask_logits.argmax(dim=1)
+        pred_masks = mask_logits.argmax(dim=1)
+        
+        #    - true_iou = compute_batch_iou(pred_masks, masks)
+        true_iou = compute_batch_iou(pred_masks, masks)
+        
+        #    - iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
+        iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
+        
+        # 7. Combined loss: loss = ce_loss + dice_loss + 0.1 * iou_loss
+        loss = ce_loss + dice_loss + 0.1 * iou_loss
+        
+        # 8. Backward and update
+        loss.backward()
+        optimizer.step()
+        
+        # 9. Calculate metrics
+        miou, _ = calculate_miou(pred_masks, masks, num_classes=21)
+        
+        # Accumulate
+        total_loss += loss.item()
+        total_miou += miou
     
-    pass
+    # 10. Return averages
+    return total_loss / len(dataloader), total_miou / len(dataloader)
 
 
 def validate(model, dataloader, device, num_classes=21, is_minisam=False):
@@ -931,7 +1075,8 @@ def validate(model, dataloader, device, num_classes=21, is_minisam=False):
     #    - outputs = model(images)
 
             if is_minisam:
-                pass
+                points, point_labels = sample_points_from_mask(masks, n_points=5)
+                outputs, _ = model(images, points, point_labels)
             else:
                 outputs = model(images)
 
@@ -965,7 +1110,8 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
     
     # 3. Generate predictions (with or without prompts based on is_minisam)
         if is_minisam:
-            pass
+            points, point_labels = sample_points_from_mask(masks_batch, n_points=5)
+            outputs, _ = model(images_batch, points, point_labels)
         else:
             outputs = model(images_batch)
         predictions = outputs.argmax(dim=1)
