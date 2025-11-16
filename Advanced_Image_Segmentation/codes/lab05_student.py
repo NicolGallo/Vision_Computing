@@ -1142,7 +1142,7 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
             outputs, _ = model(images_batch, points, point_labels)
         else:
             outputs = model(images_batch)
-        predictions = outputs.argmax(dim=1)
+        predictions = outputs.argmax(dim=1).unsqueeze(1)  # Add channel dimension
 
         # Opcional: limitar el número de muestras para la visualización
         batch_size = images_batch.size(0)
@@ -1150,7 +1150,7 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
         
         # Seleccionar solo las muestras que se van a visualizar
         images_to_plot = images_batch[:num_to_plot]
-        masks_to_plot = masks_batch[:num_to_plot]
+        masks_to_plot = masks_batch[:num_to_plot].unsqueeze(1)  # Add channel dimension
         predictions_to_plot = predictions[:num_to_plot]
 
     # 4. Create figure with subplots: (num_samples, 3)
