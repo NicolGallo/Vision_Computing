@@ -1175,36 +1175,54 @@ class VOCSegmentationDataset(Dataset):
     def __init__(self, root_dir, split='train', image_size=256, transform=None):
         """
         Args:
-            root_dir: Path to VOC dataset root
+            root_dir: Path to VOC dataset root (e.g., path/to/VOC2012_train_val/VOC2012_train_val)
             split: 'train' or 'val'
             image_size: Target image size
             transform: Optional transforms
         """
+        import os
+        
         self.root_dir = root_dir
         self.split = split
         self.image_size = image_size
         self.transform = transform
         
-        # Use torchvision's VOCSegmentation if available
-        try:
-            from torchvision.datasets import VOCSegmentation
-            self.dataset = VOCSegmentation(
-                root=root_dir,
-                year='2012',
-                image_set=split,
-                download=True,
-                transforms=None
-            )
-        except:
-            # Fallback: create synthetic data for testing
-            print(f"Warning: Could not load VOC dataset. Using synthetic data.")
+        # Convert to absolute path
+        if not os.path.isabs(root_dir):
+            # Get script directory
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            root_dir = os.path.abspath(os.path.join(script_dir, root_dir))
+        
+        # Define paths
+        self.images_dir = os.path.join(root_dir, 'JPEGImages')
+        self.masks_dir = os.path.join(root_dir, 'SegmentationClass')
+        split_file = os.path.join(root_dir, 'ImageSets', 'Segmentation', f'{split}.txt')
+        
+        # Check if dataset exists
+        if not os.path.exists(self.images_dir) or not os.path.exists(self.masks_dir):
+            print(f"Warning: Could not find VOC dataset at {root_dir}")
+            print(f"  Looking for: {self.images_dir}")
+            print(f"  Looking for: {self.masks_dir}")
+            print(f"  Using synthetic data instead.")
+            self.use_synthetic = True
+            self.length = 100 if split == 'train' else 20
+            return
+        
+        # Load image IDs from split file
+        if os.path.exists(split_file):
+            with open(split_file, 'r') as f:
+                self.image_ids = [line.strip() for line in f.readlines()]
+            print(f"✓ Loaded {len(self.image_ids)} {split} images from VOC dataset")
+        else:
+            print(f"Warning: Split file not found: {split_file}")
+            print(f"  Using synthetic data instead.")
             self.use_synthetic = True
             self.length = 100 if split == 'train' else 20
     
     def __len__(self):
         if hasattr(self, 'use_synthetic'):
             return self.length
-        return len(self.dataset)
+        return len(self.image_ids)
     
     def __getitem__(self, idx):
         if hasattr(self, 'use_synthetic'):
@@ -1221,7 +1239,15 @@ class VOCSegmentationDataset(Dataset):
             return image, mask
         
         # Load real VOC data
-        image, mask = self.dataset[idx]
+        import os
+        
+        image_id = self.image_ids[idx]
+        image_path = os.path.join(self.images_dir, f'{image_id}.jpg')
+        mask_path = os.path.join(self.masks_dir, f'{image_id}.png')
+        
+        # Load image and mask
+        image = Image.open(image_path).convert('RGB')
+        mask = Image.open(mask_path)
         
         # Convert PIL to tensor
         image = transforms.functional.to_tensor(image)
@@ -1259,7 +1285,7 @@ def main():
         'epochs': 30,
         'device': device,
         'image_size': 256,
-        'data_dir': './data'
+        'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val'
     }
     
     print(f"Training {config['model']} for {config['epochs']} epochs")
@@ -1339,7 +1365,6 @@ def main():
         mode='max',  # Maximize mIoU
         factor=0.5,
         patience=5,
-        verbose=True,
         min_lr=1e-7
     )
     
@@ -1479,7 +1504,7 @@ def compare_models():
     
     # Create validation dataset
     val_dataset = VOCSegmentationDataset(
-        root_dir='./data',
+        root_dir='../../voc/VOC2012_train_val/VOC2012_train_val',
         split='val',
         image_size=image_size
     )
@@ -1913,10 +1938,10 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     
     # Uncomment to run training
-    # main()
+    main()
     
     # Uncomment to run comparisons
-    compare_models()
+    #compare_models()
     
     # Uncomment to run interactive demo
     # interactive_minisam_demo()
