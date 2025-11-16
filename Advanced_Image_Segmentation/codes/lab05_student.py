@@ -989,11 +989,10 @@ def train_epoch_fcn(model, dataloader, optimizer, criterion, device):
     # 8. Calculate metrics: pred = outputs.argmax(dim=1), then miou = calculate_miou(pred, masks, num_classes)
         pred = outputs.argmax(dim=1)
         miou, _ = calculate_miou(pred, masks, num_classes=21)
-        loss_iou = torch.tensor(miou, device=device)
 
     # 9. Accumulate: total_loss += loss.item(), total_miou += miou
         total_loss = total_loss + loss.item()
-        total_iou = total_iou + loss_iou
+        total_miou = total_miou + miou
 
     # 10. Return averages: total_loss / len(dataloader), total_miou / len(dataloader)
     return total_loss / len(dataloader), total_miou / len(dataloader)
@@ -1086,12 +1085,10 @@ def validate(model, dataloader, device, num_classes=21, is_minisam=False):
     # 6. Calculate metrics
             miou, _ = calculate_miou(pred, masks, num_classes)
             pa = calculate_pixel_accuracy(pred, masks)
-            loss_iou = torch.tensor(miou, device=device)
-            loss_pa = torch.tensor(pa, device=device)
 
     # 7. Accumulate
-            total_miou = total_miou + loss_iou
-            total_pa = total_pa + loss_pa
+            total_miou = total_miou + miou
+            total_pa = total_pa + pa
 
     # 8. Return averages
     return total_miou / len(dataloader), total_pa / len(dataloader)
@@ -1139,6 +1136,85 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
     return fig
 
 
+# ================== Dataset Class ==================
+
+class VOCSegmentationDataset(Dataset):
+    """PASCAL VOC Segmentation Dataset"""
+    
+    def __init__(self, root_dir, split='train', image_size=256, transform=None):
+        """
+        Args:
+            root_dir: Path to VOC dataset root
+            split: 'train' or 'val'
+            image_size: Target image size
+            transform: Optional transforms
+        """
+        self.root_dir = root_dir
+        self.split = split
+        self.image_size = image_size
+        self.transform = transform
+        
+        # Use torchvision's VOCSegmentation if available
+        try:
+            from torchvision.datasets import VOCSegmentation
+            self.dataset = VOCSegmentation(
+                root=root_dir,
+                year='2012',
+                image_set=split,
+                download=True,
+                transforms=None
+            )
+        except:
+            # Fallback: create synthetic data for testing
+            print(f"Warning: Could not load VOC dataset. Using synthetic data.")
+            self.use_synthetic = True
+            self.length = 100 if split == 'train' else 20
+    
+    def __len__(self):
+        if hasattr(self, 'use_synthetic'):
+            return self.length
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        if hasattr(self, 'use_synthetic'):
+            # Generate synthetic data for testing
+            image = torch.randn(3, self.image_size, self.image_size)
+            mask = torch.randint(0, 21, (self.image_size, self.image_size)).long()
+            
+            # Normalize image
+            image = transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )(image)
+            
+            return image, mask
+        
+        # Load real VOC data
+        image, mask = self.dataset[idx]
+        
+        # Convert PIL to tensor
+        image = transforms.functional.to_tensor(image)
+        mask = torch.from_numpy(np.array(mask)).long()
+        
+        # Resize
+        image = transforms.functional.resize(image, (self.image_size, self.image_size))
+        mask = transforms.functional.resize(mask.unsqueeze(0), (self.image_size, self.image_size), 
+                                           interpolation=transforms.InterpolationMode.NEAREST)
+        mask = mask.squeeze(0)
+        
+        # Normalize image
+        image = transforms.functional.normalize(
+            image,
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+        
+        # Set ignore index (255) to 0
+        mask[mask == 255] = 0
+        
+        return image, mask
+
+
 # ================== Main Training Script ==================
 
 def main():
@@ -1150,67 +1226,644 @@ def main():
         'batch_size': 8,
         'learning_rate': 1e-4,
         'epochs': 30,
-        'device': device
+        'device': device,
+        'image_size': 256,
+        'data_dir': './data'
     }
     
     print(f"Training {config['model']} for {config['epochs']} epochs")
     
-    # TODO Task 6.1: Setup data loaders
-    # 1. Create dataset class or use existing PASCAL VOC dataset
-    # 2. Create train_loader and val_loader with appropriate transforms
+    # Task 6.1: Setup data loaders
+    print("\n[1/5] Setting up data loaders...")
     
-    # TODO Task 6.2: Create model
-    # 1. Initialize model based on config['model']
-    # 2. Move model to device
+    # Create datasets
+    train_dataset = VOCSegmentationDataset(
+        root_dir=config['data_dir'],
+        split='train',
+        image_size=config['image_size']
+    )
     
-    # TODO Task 6.3: Setup optimizer and loss
-    # 1. optimizer = torch.optim.AdamW(model.parameters(), lr=..., weight_decay=1e-4)
-    # 2. scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(...)
-    # 3. criterion = CombinedLoss()
+    val_dataset = VOCSegmentationDataset(
+        root_dir=config['data_dir'],
+        split='val',
+        image_size=config['image_size']
+    )
     
-    # TODO Task 6.4: Training loop
-    # 1. Initialize best_miou = 0
-    # 2. For each epoch:
-    #    - Train: train_loss, train_miou = train_epoch_*(...) based on model type
-    #    - Validate: val_miou, val_pa = validate(...)
-    #    - Update scheduler: scheduler.step(val_miou)
-    #    - Print metrics
-    #    - If val_miou > best_miou: save model
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=0,  # Set to 0 for Windows compatibility
+        pin_memory=True if torch.cuda.is_available() else False
+    )
     
-    # TODO Task 6.5: Plot training curves
-    # 1. Plot training loss over epochs
-    # 2. Plot validation mIoU over epochs
-    # 3. Save plots
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True if torch.cuda.is_available() else False
+    )
     
-    pass
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    
+    # Task 6.2: Create model
+    print("\n[2/5] Creating model...")
+    
+    # Initialize model based on config
+    if config['model'] == 'fcn32s':
+        model = FCN32s(n_classes=config['n_classes'])
+    elif config['model'] == 'fcn16s':
+        model = FCN16s(n_classes=config['n_classes'])
+    elif config['model'] == 'fcn8s':
+        model = FCN8s(n_classes=config['n_classes'])
+    elif config['model'] == 'deeplabv3plus':
+        model = DeepLabV3Plus(n_classes=config['n_classes'])
+    elif config['model'] == 'minisam':
+        model = MiniSAM(n_classes=config['n_classes'])
+    else:
+        raise ValueError(f"Unknown model: {config['model']}")
+    
+    # Move model to device
+    model = model.to(config['device'])
+    
+    # Count parameters
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Model: {config['model']}, Parameters: {num_params:,}")
+    
+    # Task 6.3: Setup optimizer and loss
+    print("\n[3/5] Setting up optimizer and loss...")
+    
+    # Create optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config['learning_rate'],
+        weight_decay=1e-4
+    )
+    
+    # Create learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='max',  # Maximize mIoU
+        factor=0.5,
+        patience=5,
+        verbose=True,
+        min_lr=1e-7
+    )
+    
+    # Create loss function
+    criterion = CombinedLoss()
+    
+    # Task 6.4: Training loop
+    print("\n[4/5] Starting training...")
+    
+    # Initialize tracking variables
+    best_miou = 0
+    train_losses = []
+    val_mious = []
+    val_pas = []
+    
+    # Determine if model is MiniSAM
+    is_minisam = (config['model'] == 'minisam')
+    
+    # Training loop
+    for epoch in range(config['epochs']):
+        print(f"\nEpoch [{epoch+1}/{config['epochs']}]")
+        
+        # Train
+        if is_minisam:
+            train_loss, train_miou = train_epoch_minisam(
+                model, train_loader, optimizer, criterion, config['device']
+            )
+        else:
+            train_loss, train_miou = train_epoch_fcn(
+                model, train_loader, optimizer, criterion, config['device']
+            )
+        
+        # Validate
+        val_miou, val_pa = validate(
+            model, val_loader, config['device'], 
+            num_classes=config['n_classes'],
+            is_minisam=is_minisam
+        )
+        
+        # Update scheduler
+        scheduler.step(val_miou)
+        
+        # Print metrics
+        print(f"Train Loss: {train_loss:.4f}, Train mIoU: {train_miou:.4f}")
+        print(f"Val mIoU: {val_miou:.4f}, Val PA: {val_pa:.4f}")
+        
+        # Save tracking
+        train_losses.append(train_loss)
+        val_mious.append(val_miou)
+        val_pas.append(val_pa)
+        
+        # Save best model
+        if val_miou > best_miou:
+            best_miou = val_miou
+            checkpoint_path = f'best_{config["model"]}_model.pth'
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_miou': best_miou,
+                'config': config
+            }, checkpoint_path)
+            print(f"✓ Saved new best model with mIoU: {best_miou:.4f}")
+    
+    print(f"\nTraining completed! Best validation mIoU: {best_miou:.4f}")
+    
+    # Task 6.5: Plot training curves
+    print("\n[5/5] Plotting training curves...")
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    
+    # Plot training loss
+    axes[0].plot(train_losses, label='Training Loss', linewidth=2)
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Loss')
+    axes[0].set_title('Training Loss Over Epochs')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend()
+    
+    # Plot validation mIoU
+    axes[1].plot(val_mious, label='Validation mIoU', color='green', linewidth=2)
+    axes[1].axhline(y=best_miou, color='r', linestyle='--', label=f'Best mIoU: {best_miou:.4f}')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('mIoU')
+    axes[1].set_title('Validation mIoU Over Epochs')
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend()
+    
+    # Plot validation pixel accuracy
+    axes[2].plot(val_pas, label='Validation Pixel Accuracy', color='orange', linewidth=2)
+    axes[2].set_xlabel('Epoch')
+    axes[2].set_ylabel('Pixel Accuracy')
+    axes[2].set_title('Validation Pixel Accuracy Over Epochs')
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend()
+    
+    plt.tight_layout()
+    plot_path = f'training_curves_{config["model"]}.png'
+    plt.savefig(plot_path, dpi=150)
+    print(f"Saved training curves to {plot_path}")
+    plt.show()
+    
+    # Visualize some predictions
+    print("\nGenerating prediction visualizations...")
+    visualize_predictions(
+        model, val_loader, config['device'],
+        num_samples=4, is_minisam=is_minisam,
+        save_path=f'predictions_{config["model"]}.png'
+    )
+    
+    print("\n" + "="*60)
+    print("Training pipeline completed successfully!")
+    print("="*60)
 
 
 def compare_models():
     """Compare all implemented models"""
-    # TODO Task 7.1: Compare FCN-32s, FCN-16s, FCN-8s, DeepLabV3+, and Mini-SAM
-    # 1. Create results dictionary
-    # 2. For each model:
-    #    - Load trained checkpoint
-    #    - Evaluate on test set
-    #    - Record mIoU, number of parameters, inference time
-    # 3. Create comparison table (use pandas or print nicely)
-    # 4. Generate side-by-side qualitative comparisons
+    # Task 7.1: Compare FCN-32s, FCN-16s, FCN-8s, DeepLabV3+, and Mini-SAM
     
-    pass
+    print("="*80)
+    print("MODEL COMPARISON")
+    print("="*80)
+    
+    # 1. Create results dictionary
+    results = {
+        'Model': [],
+        'Parameters (M)': [],
+        'mIoU (%)': [],
+        'Pixel Acc (%)': [],
+        'Inference Time (ms)': [],
+        'Model Size (MB)': []
+    }
+    
+    models_to_compare = ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
+    n_classes = 21
+    image_size = 256
+    
+    # Create validation dataset
+    val_dataset = VOCSegmentationDataset(
+        root_dir='./data',
+        split='val',
+        image_size=image_size
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=0
+    )
+    
+    # 2. For each model: evaluate
+    for model_name in models_to_compare:
+        print(f"\n{'='*80}")
+        print(f"Evaluating {model_name.upper()}...")
+        print(f"{'='*80}")
+        
+        try:
+            # Initialize model
+            if model_name == 'fcn32s':
+                model = FCN32s(n_classes=n_classes)
+            elif model_name == 'fcn16s':
+                model = FCN16s(n_classes=n_classes)
+            elif model_name == 'fcn8s':
+                model = FCN8s(n_classes=n_classes)
+            elif model_name == 'deeplabv3plus':
+                model = DeepLabV3Plus(n_classes=n_classes)
+            elif model_name == 'minisam':
+                model = MiniSAM(n_classes=n_classes)
+            
+            model = model.to(device)
+            
+            # Try to load trained checkpoint
+            checkpoint_path = f'best_{model_name}_model.pth'
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location=device)
+                model.load_state_dict(checkpoint['model_state_dict'])
+                print(f"✓ Loaded checkpoint from {checkpoint_path}")
+            except:
+                print(f"⚠ No checkpoint found for {model_name}, using random weights")
+            
+            # Count parameters
+            num_params = sum(p.numel() for p in model.parameters())
+            params_m = num_params / 1e6
+            
+            # Calculate model size
+            model_size_mb = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024**2)
+            
+            # Evaluate on test set
+            is_minisam = (model_name == 'minisam')
+            
+            # Measure inference time
+            model.eval()
+            inference_times = []
+            
+            with torch.no_grad():
+                # Warm up
+                dummy_input = torch.randn(1, 3, image_size, image_size).to(device)
+                if is_minisam:
+                    dummy_points = torch.rand(1, 5, 2).to(device)
+                    dummy_labels = torch.randint(0, 2, (1, 5)).to(device)
+                    _ = model(dummy_input, dummy_points, dummy_labels)
+                else:
+                    _ = model(dummy_input)
+                
+                # Measure on first few batches
+                for i, (images, masks) in enumerate(val_loader):
+                    if i >= 10:  # Test on 10 batches
+                        break
+                    
+                    images = images.to(device)
+                    
+                    start_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
+                    end_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
+                    
+                    if torch.cuda.is_available():
+                        start_time.record()
+                    else:
+                        import time
+                        start = time.time()
+                    
+                    if is_minisam:
+                        points, point_labels = sample_points_from_mask(masks, n_points=5)
+                        points, point_labels = points.to(device), point_labels.to(device)
+                        _ = model(images, points, point_labels)
+                    else:
+                        _ = model(images)
+                    
+                    if torch.cuda.is_available():
+                        end_time.record()
+                        torch.cuda.synchronize()
+                        inference_times.append(start_time.elapsed_time(end_time) / images.size(0))
+                    else:
+                        end = time.time()
+                        inference_times.append((end - start) * 1000 / images.size(0))
+            
+            avg_inference_time = np.mean(inference_times)
+            
+            # Validate
+            val_miou, val_pa = validate(model, val_loader, device, n_classes, is_minisam)
+            
+            # Record results
+            results['Model'].append(model_name.upper())
+            results['Parameters (M)'].append(f"{params_m:.2f}")
+            results['mIoU (%)'].append(f"{val_miou*100:.2f}")
+            results['Pixel Acc (%)'].append(f"{val_pa*100:.2f}")
+            results['Inference Time (ms)'].append(f"{avg_inference_time:.2f}")
+            results['Model Size (MB)'].append(f"{model_size_mb:.2f}")
+            
+            print(f"✓ {model_name.upper()}: mIoU={val_miou*100:.2f}%, PA={val_pa*100:.2f}%, "
+                  f"Params={params_m:.2f}M, Time={avg_inference_time:.2f}ms")
+            
+        except Exception as e:
+            print(f"✗ Error evaluating {model_name}: {e}")
+            results['Model'].append(model_name.upper())
+            results['Parameters (M)'].append("N/A")
+            results['mIoU (%)'].append("N/A")
+            results['Pixel Acc (%)'].append("N/A")
+            results['Inference Time (ms)'].append("N/A")
+            results['Model Size (MB)'].append("N/A")
+    
+    # 3. Create comparison table
+    print("\n" + "="*80)
+    print("COMPARISON TABLE")
+    print("="*80)
+    
+    # Print header
+    header = f"{'Model':<15} {'Params(M)':<12} {'mIoU(%)':<10} {'PA(%)':<10} {'Time(ms)':<12} {'Size(MB)':<10}"
+    print(header)
+    print("-"*80)
+    
+    # Print rows
+    for i in range(len(results['Model'])):
+        row = f"{results['Model'][i]:<15} "
+        row += f"{results['Parameters (M)'][i]:<12} "
+        row += f"{results['mIoU (%)'][i]:<10} "
+        row += f"{results['Pixel Acc (%)'][i]:<10} "
+        row += f"{results['Inference Time (ms)'][i]:<12} "
+        row += f"{results['Model Size (MB)'][i]:<10}"
+        print(row)
+    
+    print("="*80)
+    
+    # 4. Generate side-by-side qualitative comparisons
+    print("\nGenerating qualitative comparisons...")
+    
+    # Get one batch for visualization
+    images_batch, masks_batch = next(iter(val_loader))
+    num_samples = min(2, images_batch.size(0))
+    
+    fig, axes = plt.subplots(num_samples, len(models_to_compare) + 2, 
+                            figsize=(4*(len(models_to_compare)+2), 4*num_samples))
+    
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    
+    for sample_idx in range(num_samples):
+        # Show input image
+        img = images_batch[sample_idx].cpu()
+        img = img * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        img = img + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        img = torch.clamp(img, 0, 1).permute(1, 2, 0).numpy()
+        
+        axes[sample_idx, 0].imshow(img)
+        axes[sample_idx, 0].set_title('Input')
+        axes[sample_idx, 0].axis('off')
+        
+        # Show ground truth
+        gt_mask = masks_batch[sample_idx].cpu().numpy()
+        axes[sample_idx, 1].imshow(gt_mask, cmap='tab20', vmin=0, vmax=20)
+        axes[sample_idx, 1].set_title('Ground Truth')
+        axes[sample_idx, 1].axis('off')
+        
+        # Show predictions from each model
+        for model_idx, model_name in enumerate(models_to_compare):
+            try:
+                # Load model
+                if model_name == 'fcn32s':
+                    model = FCN32s(n_classes=n_classes)
+                elif model_name == 'fcn16s':
+                    model = FCN16s(n_classes=n_classes)
+                elif model_name == 'fcn8s':
+                    model = FCN8s(n_classes=n_classes)
+                elif model_name == 'deeplabv3plus':
+                    model = DeepLabV3Plus(n_classes=n_classes)
+                elif model_name == 'minisam':
+                    model = MiniSAM(n_classes=n_classes)
+                
+                model = model.to(device)
+                
+                # Try to load checkpoint
+                try:
+                    checkpoint = torch.load(f'best_{model_name}_model.pth', map_location=device)
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                except:
+                    pass
+                
+                model.eval()
+                
+                # Generate prediction
+                with torch.no_grad():
+                    img_input = images_batch[sample_idx:sample_idx+1].to(device)
+                    mask_input = masks_batch[sample_idx:sample_idx+1]
+                    
+                    if model_name == 'minisam':
+                        points, point_labels = sample_points_from_mask(mask_input, n_points=5)
+                        points, point_labels = points.to(device), point_labels.to(device)
+                        output, _ = model(img_input, points, point_labels)
+                    else:
+                        output = model(img_input)
+                    
+                    pred = output.argmax(dim=1)[0].cpu().numpy()
+                
+                axes[sample_idx, model_idx + 2].imshow(pred, cmap='tab20', vmin=0, vmax=20)
+                axes[sample_idx, model_idx + 2].set_title(model_name.upper())
+                axes[sample_idx, model_idx + 2].axis('off')
+                
+            except Exception as e:
+                axes[sample_idx, model_idx + 2].text(0.5, 0.5, f'Error:\n{model_name}',
+                                                      ha='center', va='center')
+                axes[sample_idx, model_idx + 2].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig('model_comparison.png', dpi=150, bbox_inches='tight')
+    print("Saved comparison to 'model_comparison.png'")
+    plt.show()
+    
+    print("\n" + "="*80)
+    print("Model comparison completed!")
+    print("="*80)
+    
+    return results
 
 
 def interactive_minisam_demo():
     """Interactive Mini-SAM demo with point/box prompting"""
-    # TODO Task 7.2: Create interactive demo
-    # 1. Load trained Mini-SAM model
-    # 2. Load test image
-    # 3. Display image and get user clicks (or use pre-defined points)
-    # 4. Run model with point prompts
-    # 5. Display segmentation result
-    # 6. Allow user to add correction points
-    # 7. Re-run and display refined result
+    # Task 7.2: Create interactive demo
     
-    pass
+    print("="*80)
+    print("INTERACTIVE MINI-SAM DEMO")
+    print("="*80)
+    
+    # 1. Load trained Mini-SAM model
+    print("\n[1/7] Loading Mini-SAM model...")
+    model = MiniSAM(n_classes=21)
+    model = model.to(device)
+    
+    # Try to load checkpoint
+    try:
+        checkpoint = torch.load('best_minisam_model.pth', map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print("✓ Loaded trained checkpoint")
+    except:
+        print("⚠ No checkpoint found, using random weights")
+    
+    model.eval()
+    
+    # 2. Load test image
+    print("\n[2/7] Loading test image...")
+    val_dataset = VOCSegmentationDataset(
+        root_dir='./data',
+        split='val',
+        image_size=256
+    )
+    
+    # Get a random test image
+    idx = np.random.randint(0, len(val_dataset))
+    image, gt_mask = val_dataset[idx]
+    
+    print(f"✓ Loaded test image {idx}")
+    
+    # 3. Display image and use pre-defined points (simulating user clicks)
+    print("\n[3/7] Setting up prompts...")
+    
+    # Prepare image for model
+    image_tensor = image.unsqueeze(0).to(device)  # Add batch dimension
+    
+    # Simulate initial user clicks (foreground and background points)
+    # These would normally come from user interaction
+    initial_points = torch.tensor([
+        [0.3, 0.3],  # Foreground point
+        [0.5, 0.5],  # Foreground point
+        [0.1, 0.1],  # Background point
+    ]).unsqueeze(0).to(device)  # Shape: (1, 3, 2)
+    
+    initial_labels = torch.tensor([1, 1, 0]).unsqueeze(0).to(device)  # Shape: (1, 3)
+    
+    print(f"✓ Initial prompts: {initial_points.shape[1]} points")
+    print(f"  - Foreground points: {(initial_labels == 1).sum().item()}")
+    print(f"  - Background points: {(initial_labels == 0).sum().item()}")
+    
+    # 4. Run model with point prompts
+    print("\n[4/7] Running initial segmentation...")
+    with torch.no_grad():
+        mask_logits_v1, iou_pred_v1 = model(image_tensor, initial_points, initial_labels)
+        pred_mask_v1 = mask_logits_v1.argmax(dim=1)[0].cpu().numpy()
+    
+    print(f"✓ Initial segmentation complete (Predicted IoU: {iou_pred_v1.item():.3f})")
+    
+    # 5. Display segmentation result
+    print("\n[5/7] Visualizing initial result...")
+    
+    # Denormalize image for display
+    img_display = image.cpu()
+    img_display = img_display * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    img_display = img_display + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    img_display = torch.clamp(img_display, 0, 1).permute(1, 2, 0).numpy()
+    
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    
+    # Row 1: Initial segmentation
+    axes[0, 0].imshow(img_display)
+    axes[0, 0].set_title('Input Image')
+    axes[0, 0].axis('off')
+    
+    # Plot initial points
+    points_np = initial_points[0].cpu().numpy()
+    labels_np = initial_labels[0].cpu().numpy()
+    fg_points = points_np[labels_np == 1]
+    bg_points = points_np[labels_np == 0]
+    
+    axes[0, 1].imshow(img_display)
+    if len(fg_points) > 0:
+        axes[0, 1].scatter(fg_points[:, 1] * 256, fg_points[:, 0] * 256, 
+                          c='green', s=200, marker='*', edgecolors='white', linewidths=2,
+                          label='Foreground')
+    if len(bg_points) > 0:
+        axes[0, 1].scatter(bg_points[:, 1] * 256, bg_points[:, 0] * 256, 
+                          c='red', s=200, marker='x', linewidths=3,
+                          label='Background')
+    axes[0, 1].set_title(f'Initial Prompts ({len(points_np)} points)')
+    axes[0, 1].legend()
+    axes[0, 1].axis('off')
+    
+    axes[0, 2].imshow(pred_mask_v1, cmap='tab20', vmin=0, vmax=20)
+    axes[0, 2].set_title(f'Initial Prediction (IoU: {iou_pred_v1.item():.3f})')
+    axes[0, 2].axis('off')
+    
+    # 6. Add correction points (simulating refinement)
+    print("\n[6/7] Adding correction points...")
+    
+    # Add more points to refine the segmentation
+    correction_points = torch.tensor([
+        [0.7, 0.7],  # Additional foreground
+        [0.2, 0.8],  # Additional background
+    ]).unsqueeze(0).to(device)
+    
+    correction_labels = torch.tensor([1, 0]).unsqueeze(0).to(device)
+    
+    # Combine with initial points
+    refined_points = torch.cat([initial_points, correction_points], dim=1)
+    refined_labels = torch.cat([initial_labels, correction_labels], dim=1)
+    
+    print(f"✓ Refined prompts: {refined_points.shape[1]} points")
+    print(f"  - Foreground points: {(refined_labels == 1).sum().item()}")
+    print(f"  - Background points: {(refined_labels == 0).sum().item()}")
+    
+    # 7. Re-run and display refined result
+    print("\n[7/7] Running refined segmentation...")
+    with torch.no_grad():
+        mask_logits_v2, iou_pred_v2 = model(image_tensor, refined_points, refined_labels)
+        pred_mask_v2 = mask_logits_v2.argmax(dim=1)[0].cpu().numpy()
+    
+    print(f"✓ Refined segmentation complete (Predicted IoU: {iou_pred_v2.item():.3f})")
+    print(f"  IoU improvement: {(iou_pred_v2.item() - iou_pred_v1.item()):.3f}")
+    
+    # Row 2: Refined segmentation
+    axes[1, 0].imshow(gt_mask.cpu().numpy(), cmap='tab20', vmin=0, vmax=20)
+    axes[1, 0].set_title('Ground Truth')
+    axes[1, 0].axis('off')
+    
+    # Plot refined points
+    points_np_refined = refined_points[0].cpu().numpy()
+    labels_np_refined = refined_labels[0].cpu().numpy()
+    fg_points_refined = points_np_refined[labels_np_refined == 1]
+    bg_points_refined = points_np_refined[labels_np_refined == 0]
+    
+    axes[1, 1].imshow(img_display)
+    if len(fg_points_refined) > 0:
+        axes[1, 1].scatter(fg_points_refined[:, 1] * 256, fg_points_refined[:, 0] * 256, 
+                          c='green', s=200, marker='*', edgecolors='white', linewidths=2,
+                          label='Foreground')
+    if len(bg_points_refined) > 0:
+        axes[1, 1].scatter(bg_points_refined[:, 1] * 256, bg_points_refined[:, 0] * 256, 
+                          c='red', s=200, marker='x', linewidths=3,
+                          label='Background')
+    axes[1, 1].set_title(f'Refined Prompts ({len(points_np_refined)} points)')
+    axes[1, 1].legend()
+    axes[1, 1].axis('off')
+    
+    axes[1, 2].imshow(pred_mask_v2, cmap='tab20', vmin=0, vmax=20)
+    axes[1, 2].set_title(f'Refined Prediction (IoU: {iou_pred_v2.item():.3f})')
+    axes[1, 2].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig('minisam_interactive_demo.png', dpi=150, bbox_inches='tight')
+    print("\nSaved demo visualization to 'minisam_interactive_demo.png'")
+    plt.show()
+    
+    # Summary
+    print("\n" + "="*80)
+    print("DEMO SUMMARY")
+    print("="*80)
+    print(f"Initial segmentation - Points: {initial_points.shape[1]}, IoU: {iou_pred_v1.item():.3f}")
+    print(f"Refined segmentation - Points: {refined_points.shape[1]}, IoU: {iou_pred_v2.item():.3f}")
+    print(f"Improvement: {(iou_pred_v2.item() - iou_pred_v1.item()):.3f}")
+    print("="*80)
+    
+    print("\nNote: In a real interactive demo, you would:")
+    print("  1. Use matplotlib event handlers to capture user clicks")
+    print("  2. Update the visualization in real-time")
+    print("  3. Allow multiple refinement iterations")
+    print("  4. Support both point and box prompts")
+    
+    return pred_mask_v1, pred_mask_v2
 
 
 if __name__ == "__main__":
