@@ -67,6 +67,8 @@ class FCN32s(nn.Module):
         # 3. Apply score layer (1x1 conv)
         # 4. Apply 32x upsampling
         # 5. Return output
+        
+        input_size = x.shape[2:]
 
         x = self.conv1(x)
         x = self.bn1(x)
@@ -81,6 +83,10 @@ class FCN32s(nn.Module):
         # Esto mapea los 2048 canales a las n_classes (ej. 21)
         x = self.score_fr(x)  # Aplicar la capa de puntuación (1x1 conv). x sigue teniendo stride 32 y n_classes canales
         x = self.upscore32(x)  # Upsampling 32x para volver al tamaño original
+        
+        # Ensure output matches input size
+        if x.shape[2:] != input_size:
+            x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
      
         return x
 
@@ -131,6 +137,8 @@ class FCN16s(nn.Module):
         # 7. Upsample fused result by 16x
         # 8. Return output
         
+        input_size = x.shape[2:]
+        
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -150,6 +158,10 @@ class FCN16s(nn.Module):
         
         x = x + pool4
         x = self.upscore16(x)
+        
+        # Ensure output matches input size
+        if x.shape[2:] != input_size:
+            x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
 
         return x
 
@@ -202,6 +214,8 @@ class FCN8s(nn.Module):
     def forward(self, x):
         # Task 1.4: Implement forward pass with progressive skip fusion
         # ENCODER PATH:
+        input_size = x.shape[2:]
+        
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)
         x = self.layer1(x) # stride 4
@@ -235,6 +249,10 @@ class FCN8s(nn.Module):
         
         # Final upsampling:
         out = self.upscore8(fuse_pool3) # Upsample 8 -> 1 (original resolution)
+        
+        # Ensure output matches input size
+        if out.shape[2:] != input_size:
+            out = F.interpolate(out, size=input_size, mode='bilinear', align_corners=False)
         
         return out
 
@@ -475,12 +493,14 @@ class MiniSAM(nn.Module):
         backbone = models.mobilenet_v3_small(pretrained=True)
 
         # 2. Extract features: nn.Sequential(*list(backbone.features))
-        #    Extraer características, EXCLUYENDO el pooling final. Esto nos da una salida de [B, 576, H/16, W/16]
-        self.image_encoder = nn.Sequential(*list(backbone.features)[:-1])
+        #    Extraer características hasta antes de la última capa
+        #    MobileNetV3-Small tiene 12 bloques, usamos hasta el bloque 11 (índice -2)
+        #    Esto nos da 96 canales de salida, no 576
+        self.image_encoder = nn.Sequential(*list(backbone.features)[:-2])
 
-        # 3. Create projection: nn.Conv2d(576, embed_dim, 1) - MobileNetV3-Small outputs 576 channels
-        #    Crear proyección de 576 -> embed_dim (ej. 256)
-        self.img_proj = nn.Conv2d(576, embed_dim, kernel_size=1)
+        # 3. Create projection: nn.Conv2d(96, embed_dim, 1) - Adjusted for correct channels
+        #    Crear proyección de 96 -> embed_dim (ej. 256)
+        self.img_proj = nn.Conv2d(96, embed_dim, kernel_size=1)
 
         # Task 3.2: Create prompt encoders
         # Point type embedding:
@@ -1885,7 +1905,7 @@ if __name__ == "__main__":
     # main()
     
     # Uncomment to run comparisons
-    # compare_models()
+    compare_models()
     
     # Uncomment to run interactive demo
     # interactive_minisam_demo()
