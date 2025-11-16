@@ -675,9 +675,16 @@ class MiniSAM(nn.Module):
         # 2. img_features = self.encode_image(images)
         img_features = self.encode_image(images)
         
+        # Get actual feature map size from encoder output
+        feat_h, feat_w = img_features.shape[2], img_features.shape[3]
+        
         # ENCODE PROMPTS:
         # 3. prompt_features = self.encode_prompts(points, point_labels, boxes, img_size=(H, W))
         prompt_features = self.encode_prompts(points, point_labels, boxes, img_size=(H, W))
+        
+        # Resize prompt features to match image features spatial dimensions
+        if prompt_features.shape[2:] != img_features.shape[2:]:
+            prompt_features = F.interpolate(prompt_features, size=(feat_h, feat_w), mode='bilinear', align_corners=False)
         
         # FUSE FEATURES:
         # 4. fused = torch.cat([img_features, prompt_features], dim=1)
@@ -693,6 +700,10 @@ class MiniSAM(nn.Module):
         
         # 7. mask_logits = self.upsample(mask_logits)
         mask_logits = self.upsample(mask_logits)
+        
+        # Ensure output matches input size
+        if mask_logits.shape[2:] != (H, W):
+            mask_logits = F.interpolate(mask_logits, size=(H, W), mode='bilinear', align_corners=False)
         
         # PREDICT IoU:
         # 8. iou_pred = self.iou_head(decoded)
