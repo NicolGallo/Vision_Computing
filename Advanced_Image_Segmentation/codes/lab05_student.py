@@ -847,10 +847,11 @@ def sample_points_from_mask(masks, n_points=5):
     for b in range(B):
         #    - Get mask = masks[b]
         mask = masks[b]
+        valid_mask = (mask != 255)
         
         #    SAMPLE FOREGROUND POINTS (50%):
         #    4. fg_indices = torch.nonzero(mask > 0) - Find all foreground pixels
-        fg_indices = torch.nonzero(mask > 0, as_tuple=False)
+        fg_indices = torch.nonzero((mask > 0) & valid_mask, as_tuple=False)
         
         #    5. If fg_indices not empty:
         if len(fg_indices) > 0:
@@ -872,7 +873,7 @@ def sample_points_from_mask(masks, n_points=5):
         
         #    SAMPLE BACKGROUND POINTS (50%):
         #    7. bg_indices = torch.nonzero(mask == 0) - Find all background pixels
-        bg_indices = torch.nonzero(mask == 0, as_tuple=False)
+        bg_indices = torch.nonzero((mask == 0) & valid_mask, as_tuple=False)
         
         #    8. If bg_indices not empty:
         if len(bg_indices) > 0:
@@ -920,9 +921,10 @@ def sample_points_from_mask(masks, n_points=5):
 class DiceLoss(nn.Module):
     """Dice loss for segmentation"""
     
-    def __init__(self, smooth=1e-6):
+    def __init__(self, smooth=1e-6, ignore_index=255):
         super().__init__()
         self.smooth = smooth
+        self.ignore_index = ignore_index
         
     def forward(self, pred, target):
         """
@@ -930,40 +932,36 @@ class DiceLoss(nn.Module):
             pred: (B, C, H, W) logits
             target: (B, H, W) class indices
         """    
-        # Task 4.1: Implement Dice loss
-        # 1. Apply softmax to pred: pred = torch.softmax(pred, dim=1)
-        pred = torch.softmax(pred, dim=1) 
+        pred = torch.softmax(pred, dim=1)
+        num_classes = pred.shape[1]
+        target_processed = target.clone()
+        valid_mask = (target_processed != self.ignore_index).unsqueeze(1)
+        target_processed = target_processed.masked_fill(valid_mask.squeeze(1) == 0, 0)
+        target_processed = target_processed.clamp(min=0, max=num_classes - 1)
+        target_one_hot = F.one_hot(target_processed, num_classes=num_classes).permute(0, 3, 1, 2).float()
 
-        # 2. Convert target to one-hot: target_one_hot = F.one_hot(target, num_classes=pred.shape[1])
-        target_one_hot = F.one_hot(target, num_classes=pred.shape[1]) # Shape: (B, H, W, C)
+        valid_mask = valid_mask.float()
+        pred = pred * valid_mask
+        target_one_hot = target_one_hot * valid_mask
 
-        # 3. Permute target_one_hot to (B, C, H, W) and convert to float
-        target_one_hot = target_one_hot.permute(0, 3, 1, 2).float() # Shape: (B, C, H, W)
-
-        # 4. Flatten spatial dimensions: pred_flat = pred.view(B, C, -1)
         B, C, H, W = pred.shape
-        pred_flat = pred.view(B, C, -1) # Shape: (B, C, H*W)
-        
-        # 5. Flatten target: target_flat = target_one_hot.view(B, C, -1)
-        target_flat = target_one_hot.view(B, C, -1) # Shape: (B, C, H*W)
+        pred_flat = pred.reshape(B, C, -1)
+        target_flat = target_one_hot.reshape(B, C, -1)
 
-        # 6. Compute intersection: (pred_flat * target_flat).sum(dim=2)
-        intersection = (pred_flat * target_flat).sum(dim=2) # Shape: (B, C)
-
-        # 7. Compute dice = (2 * intersection + smooth) / (pred_flat.sum(dim=2) + target_flat.sum(dim=2) + smooth)
-        dice = (2. * intersection + self.smooth) / (pred_flat.sum(dim=2) + target_flat.sum(dim=2) + self.smooth) # Shape: (B, C)
-
-        # 8. Return 1 - dice.mean()
+        intersection = (pred_flat * target_flat).sum(dim=2)
+        denominator = pred_flat.sum(dim=2) + target_flat.sum(dim=2) + self.smooth
+        dice = (2. * intersection + self.smooth) / denominator
         return 1 - dice.mean()
 
 
 class FocalLoss(nn.Module):
     """Focal loss for handling class imbalance"""
     
-    def __init__(self, alpha=0.25, gamma=2.0):
+    def __init__(self, alpha=0.25, gamma=2.0, ignore_index=255):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
+        self.ignore_index = ignore_index
         
     def forward(self, pred, target):
         """
@@ -971,36 +969,29 @@ class FocalLoss(nn.Module):
             pred: (B, C, H, W) logits
             target: (B, H, W) class indices
         """
-        # Task 4.2: Implement Focal loss
-        # 1. Compute cross-entropy: ce_loss = F.cross_entropy(pred, target, reduction='none')
-        ce_loss = F.cross_entropy(pred, target, reduction='none')
-
-        # 2. Compute pt = torch.exp(-ce_loss) - Probability of correct class
+        ce_loss = F.cross_entropy(pred, target, reduction='none', ignore_index=self.ignore_index)
         pt = torch.exp(-ce_loss)
-
-        # 3. Apply focal term: focal_loss = alpha * (1 - pt)^gamma * ce_loss
         focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
-
-        # 4. Return focal_loss.mean()
-        return focal_loss.mean()
+        valid_mask = (target != self.ignore_index).float()
+        focal_loss = focal_loss * valid_mask
+        valid_elements = valid_mask.sum()
+        if valid_elements == 0:
+            return torch.tensor(0.0, device=pred.device)
+        return focal_loss.sum() / valid_elements
 
 
 class CombinedLoss(nn.Module):
     """Combined loss: CE + Dice + Focal"""
     
-    def __init__(self, weights={'ce': 0.3, 'dice': 0.5, 'focal': 0.2}):
+    def __init__(self, weights={'ce': 0.3, 'dice': 0.5, 'focal': 0.2}, ignore_index=255):
         super().__init__()
         self.weights = weights
-        self.ce_loss = nn.CrossEntropyLoss()
-        self.dice_loss = DiceLoss()
-        self.focal_loss = FocalLoss()
+        self.ignore_index = ignore_index
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        self.dice_loss = DiceLoss(ignore_index=ignore_index)
+        self.focal_loss = FocalLoss(ignore_index=ignore_index)
         
     def forward(self, pred, target):
-        # Task 4.3: Compute weighted combination
-        # 1. Compute: ce = self.ce_loss(pred, target)
-        # 2. Compute: dice = self.dice_loss(pred, target)
-        # 3. Compute: focal = self.focal_loss(pred, target)
-        # 4. Return: weights['ce'] * ce + weights['dice'] * dice + weights['focal'] * focal
         ce = self.ce_loss(pred, target)
         dice = self.dice_loss(pred, target)
         focal = self.focal_loss(pred, target)
@@ -1009,7 +1000,7 @@ class CombinedLoss(nn.Module):
 
 # ================== Evaluation Metrics ==================
 
-def calculate_miou(pred, target, num_classes):
+def calculate_miou(pred, target, num_classes, ignore_index=255):
     """
     Calculate mean Intersection over Union
     Args:
@@ -1025,8 +1016,14 @@ def calculate_miou(pred, target, num_classes):
     ious = []
 
     # 2. Convert pred and target to numpy
+    mask = (target != ignore_index)
+    pred = pred.clone()
+    pred = torch.where(mask, pred, torch.full_like(pred, ignore_index))
     pred = pred.cpu().numpy()
     target = target.cpu().numpy()
+    mask_np = mask.cpu().numpy()
+    pred = np.where(mask_np, pred, -1)
+    target = np.where(mask_np, target, -1)
 
     # 3. For each class c in range(num_classes):
     for c in range(num_classes):
@@ -1056,20 +1053,19 @@ def calculate_miou(pred, target, num_classes):
     # 6. Return miou, ious
     return miou, ious
 
-def calculate_pixel_accuracy(pred, target):
+def calculate_pixel_accuracy(pred, target, ignore_index=255):
     """Calculate pixel accuracy"""
     # Task 4.5: Implement pixel accuracy
     # 1. correct = (pred == target).sum()
-    correct = (pred == target).sum()
-
-    # 2. total = pred.numel()
-    total = pred.numel()
-
-    # 3. Return (correct / total).item()
+    valid_mask = (target != ignore_index)
+    correct = ((pred == target) & valid_mask).float().sum()
+    total = valid_mask.float().sum()
+    if total == 0:
+        return 0.0
     return (correct / total).item()
 
 
-def compute_batch_iou(pred, target):
+def compute_batch_iou(pred, target, ignore_index=255):
     """
     Compute IoU for each image in batch
     Args:
@@ -1091,8 +1087,11 @@ def compute_batch_iou(pred, target):
         #    - iou = intersection / (union + 1e-6)
         #    - Append iou
     for b in range(B): #cada imagen del batch
-        intersection = ((pred[b] == target[b]) & (target[b] > 0)).float().sum()
-        union = ((pred[b] > 0) | (target[b] > 0)).float().sum()
+        valid_mask = (target[b] != ignore_index)
+        pred_pos = (pred[b] > 0) & valid_mask
+        target_pos = (target[b] > 0) & valid_mask
+        intersection = ((pred[b] == target[b]) & target_pos).float().sum()
+        union = (pred_pos | target_pos).float().sum()
         if union == 0:
             iou = torch.tensor(1.0, device=pred.device)  # Both empty
         else:
@@ -1146,7 +1145,7 @@ def train_epoch_fcn(model, dataloader, optimizer, criterion, device, scaler=None
         # 8. Calculate metrics: pred = outputs.argmax(dim=1), then miou = calculate_miou(pred, masks, num_classes)
         pred = outputs.argmax(dim=1)
         num_classes = outputs.shape[1]
-        miou, _ = calculate_miou(pred, masks, num_classes=num_classes)
+        miou, _ = calculate_miou(pred, masks, num_classes=num_classes, ignore_index=255)
 
         # 9. Accumulate: total_loss += loss.item(), total_miou += miou
         total_loss = total_loss + loss.item()
@@ -1161,6 +1160,7 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
     model.train()
     total_loss = 0
     total_miou = 0
+    dice_fn = DiceLoss(ignore_index=255)
     
     # Task 5.2: Implement Mini-SAM training
     # 1. For images, masks in dataloader:
@@ -1182,10 +1182,10 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
                 
                 # 6. Compute losses:
                 #    - ce_loss = F.cross_entropy(mask_logits, masks)
-                ce_loss = F.cross_entropy(mask_logits, masks)
+                ce_loss = F.cross_entropy(mask_logits, masks, ignore_index=255)
                 
                 #    - dice_loss = DiceLoss()(mask_logits, masks)
-                dice_loss = DiceLoss()(mask_logits, masks)
+                dice_loss = dice_fn(mask_logits, masks)
                 
                 #    - pred_masks = mask_logits.argmax(dim=1)
                 pred_masks = mask_logits.argmax(dim=1)
@@ -1208,8 +1208,8 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
             mask_logits, iou_pred = model(images, points, point_labels)
             
             # 6. Compute losses:
-            ce_loss = F.cross_entropy(mask_logits, masks)
-            dice_loss = DiceLoss()(mask_logits, masks)
+            ce_loss = F.cross_entropy(mask_logits, masks, ignore_index=255)
+            dice_loss = dice_fn(mask_logits, masks)
             pred_masks = mask_logits.argmax(dim=1)
             true_iou = compute_batch_iou(pred_masks, masks)
             iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
@@ -1223,7 +1223,7 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
         
         # 9. Calculate metrics
         num_classes = mask_logits.shape[1]
-        miou, _ = calculate_miou(pred_masks, masks, num_classes=num_classes)
+        miou, _ = calculate_miou(pred_masks, masks, num_classes=num_classes, ignore_index=255)
         
         # Accumulate
         total_loss += loss.item()
@@ -1264,8 +1264,8 @@ def validate(model, dataloader, device, num_classes=None, is_minisam=False):
 
             # 6. Calculate metrics
             eval_num_classes = outputs.shape[1] if num_classes is None else num_classes
-            miou, _ = calculate_miou(pred, masks, eval_num_classes)
-            pa = calculate_pixel_accuracy(pred, masks)
+            miou, _ = calculate_miou(pred, masks, eval_num_classes, ignore_index=255)
+            pa = calculate_pixel_accuracy(pred, masks, ignore_index=255)
 
             # 7. Accumulate
             total_miou = total_miou + miou
@@ -1418,9 +1418,6 @@ class VOCSegmentationDataset(Dataset):
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
         )
-        
-        # Set ignore index (255) to 0
-        mask[mask == 255] = 0
         
         return image, mask
     

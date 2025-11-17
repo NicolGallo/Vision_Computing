@@ -13,55 +13,81 @@ import cv2
 
 # ================== Metrics ==================
 
-def calculate_metrics(pred, target, threshold=0.5):
+def calculate_metrics(pred, target, threshold=0.5, ignore_index=255):
     """
-    Calculate multiple segmentation metrics
-    
-    Args:
-        pred: Model predictions (logits)
-        target: Ground truth masks
-        threshold: Threshold for binary classification
-    
-    Returns:
-        Dictionary with metrics
+    Calculate segmentation metrics (binary or multi-class)
     """
-    # Apply sigmoid and threshold
-    pred = torch.sigmoid(pred)
-    pred_binary = (pred > threshold).float()
+    if target.dim() == 4 and target.shape[1] == 1:
+        target = target.squeeze(1)
+    num_classes = pred.shape[1]
     
-    # Flatten tensors
-    pred_flat = pred_binary.view(-1)
-    target_flat = target.view(-1)
+    if num_classes == 1:
+        probs = torch.sigmoid(pred)
+        pred_labels = (probs > threshold).long().squeeze(1)
+        target_clamped = target.clone()
+        target_clamped = target_clamped.masked_fill(target_clamped == ignore_index, 0)
+        target_clamped = torch.clamp(target_clamped, 0, 1)
+        mask = (target != ignore_index)
+        valid_pred = pred_labels[mask]
+        valid_target = target_clamped[mask]
+        if valid_target.numel() == 0:
+            return {'iou': 0.0, 'dice': 0.0, 'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
+        tp = (valid_pred * valid_target).sum().float()
+        fp = valid_pred.sum().float() - tp
+        fn = valid_target.sum().float() - tp
+        tn = valid_pred.numel() - tp - fp - fn
+        iou = (tp + 1e-6) / (tp + fp + fn + 1e-6)
+        dice = (2 * tp + 1e-6) / (2 * tp + fp + fn + 1e-6)
+        accuracy = (tp + tn) / (tp + tn + fp + fn + 1e-6)
+        precision = (tp + 1e-6) / (tp + fp + 1e-6)
+        recall = (tp + 1e-6) / (tp + fn + 1e-6)
+        f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
+        return {
+            'iou': iou.item(),
+            'dice': dice.item(),
+            'accuracy': accuracy.item(),
+            'precision': precision.item(),
+            'recall': recall.item(),
+            'f1': f1.item()
+        }
     
-    # Calculate metrics
-    tp = (pred_flat * target_flat).sum()
-    fp = pred_flat.sum() - tp
-    fn = target_flat.sum() - tp
-    tn = (1 - pred_flat).sum() - fn
+    probs = torch.softmax(pred, dim=1)
+    pred_labels = probs.argmax(dim=1)
+    mask = (target != ignore_index)
+    valid_pred = pred_labels[mask].view(-1)
+    valid_target = target[mask].view(-1)
+    if valid_target.numel() == 0:
+        return {'iou': 0.0, 'dice': 0.0, 'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
+    num_classes = pred.shape[1]
+    confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
+    np.add.at(confusion, (valid_target.cpu().numpy(), valid_pred.cpu().numpy()), 1)
+    tp = np.diag(confusion).astype(np.float64)
+    fp = confusion.sum(axis=0) - tp
+    fn = confusion.sum(axis=1) - tp
+    tn = confusion.sum() - (tp + fp + fn)
     
-    # IoU
-    iou = (tp + 1e-6) / (tp + fp + fn + 1e-6)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        iou = tp / (tp + fp + fn)
+        dice = (2 * tp) / (2 * tp + fp + fn)
+        precision = tp / (tp + fp)
+        recall = tp / (tp + fn)
+        f1 = 2 * precision * recall / (precision + recall)
     
-    # Dice
-    dice = (2 * tp + 1e-6) / (2 * tp + fp + fn + 1e-6)
+    def nanmean(x):
+        x = np.where(np.isfinite(x), x, np.nan)
+        if np.isnan(x).all():
+            return 0.0
+        return float(np.nanmean(x))
     
-    # Pixel accuracy
-    accuracy = (tp + tn) / (tp + tn + fp + fn)
-    
-    # Precision and Recall
-    precision = (tp + 1e-6) / (tp + fp + 1e-6)
-    recall = (tp + 1e-6) / (tp + fn + 1e-6)
-    
-    # F1 Score
-    f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
+    accuracy = float(tp.sum() / max(confusion.sum(), 1))
     
     return {
-        'iou': iou.item(),
-        'dice': dice.item(),
-        'accuracy': accuracy.item(),
-        'precision': precision.item(),
-        'recall': recall.item(),
-        'f1': f1.item()
+        'iou': nanmean(iou),
+        'dice': nanmean(dice),
+        'accuracy': accuracy,
+        'precision': nanmean(precision),
+        'recall': nanmean(recall),
+        'f1': nanmean(f1)
     }
 
 
