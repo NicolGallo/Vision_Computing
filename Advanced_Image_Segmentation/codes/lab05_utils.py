@@ -182,7 +182,7 @@ def plot_segmentation_results(images, masks, predictions, title="Segmentation Re
         if mask_tensor.dim() == 3 and mask_tensor.shape[0] == 1:
             mask_tensor = mask_tensor.squeeze(0)
         mask_np = mask_tensor.cpu().numpy()
-        if mask_tensor.dtype.is_floating_point():
+        if mask_tensor.dtype.is_floating_point:
             axes[i, 1].imshow(mask_np, cmap='gray')
         else:
             mask_max = float(np.nanmax(mask_np)) if mask_np.size else 1.0
@@ -195,9 +195,9 @@ def plot_segmentation_results(images, masks, predictions, title="Segmentation Re
         pred_tensor = predictions[i]
         if pred_tensor.dim() == 3 and pred_tensor.shape[0] == 1:
             pred_tensor = pred_tensor.squeeze(0)
-        if pred_tensor.dtype.is_floating_point() and pred_tensor.dim() == 3:
+        if pred_tensor.dtype.is_floating_point and pred_tensor.dim() == 3:
             pred_tensor = torch.softmax(pred_tensor, dim=0).argmax(dim=0)
-        if pred_tensor.dtype.is_floating_point() and pred_tensor.dim() == 2:
+        if pred_tensor.dtype.is_floating_point and pred_tensor.dim() == 2:
             pred_np = torch.sigmoid(pred_tensor).cpu().numpy()
             axes[i, 2].imshow(pred_np, cmap='gray')
         else:
