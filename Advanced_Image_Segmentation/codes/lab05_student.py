@@ -7,7 +7,7 @@ This lab implements and compares 5 state-of-the-art semantic segmentation archit
 - DeepLabV3+: Advanced architecture with ASPP (Atrous Spatial Pyramid Pooling)
 - MiniSAM: Lightweight Segment Anything Model with interactive prompts
 
-Author: David
+Author: David y Nico
 Date: November 2025
 Dataset: PASCAL VOC 2012 (21 classes)
 Hardware: NVIDIA RTX 3090 (24GB VRAM)
@@ -127,23 +127,30 @@ class FCN32s(nn.Module):
         # 4. Apply 32x upsampling
         # 5. Return output
         
-        input_size = x.shape[2:]
+        # Save input size for final resize if needed
+        input_size = x.shape[2:]  # (H, W)
 
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x) # Aquí x tiene stride 4 (1/4 del tamaño original)
+        # Initial convolution block (stride 2 after conv1, stride 4 after maxpool)
+        x = self.conv1(x)  # Stride 2: H/2 × W/2
+        x = self.bn1(x)    # Batch normalization
+        x = self.relu(x)   # ReLU activation
+        x = self.maxpool(x) # Stride 4: H/4 × W/4 (factor 2 más)
 
-        x = self.layer1(x)  # Aquí x tiene stride 4 (1/4 del tamaño original)
-        x = self.layer2(x)  # Aquí x tiene stride 8 (1/8 del tamaño original)
-        x = self.layer3(x)  # Aquí x tiene stride 16 (1/16 del tamaño original)
-        x = self.layer4(x)  # Aquí x tiene stride 32 (1/32 del tamaño original)
+        # ResNet bottleneck blocks (progressive downsampling)
+        x = self.layer1(x)  # Stride 4: H/4 × W/4 (256 channels)
+        x = self.layer2(x)  # Stride 8: H/8 × W/8 (512 channels)
+        x = self.layer3(x)  # Stride 16: H/16 × W/16 (1024 channels)
+        x = self.layer4(x)  # Stride 32: H/32 × W/32 (2048 channels)
 
-        # Esto mapea los 2048 canales a las n_classes (ej. 21)
-        x = self.score_fr(x)  # Aplicar la capa de puntuación (1x1 conv). x sigue teniendo stride 32 y n_classes canales
-        x = self.upscore32(x)  # Upsampling 32x para volver al tamaño original
+        # Score layer: map 2048 feature channels to n_classes (e.g., 21 for VOC)
+        # This predicts class scores for each pixel at stride 32
+        x = self.score_fr(x)  # Shape: (B, n_classes, H/32, W/32)
         
-        # Ensure output matches input size
+        # Upsample by 32× to restore original resolution
+        # Uses learned bilinear interpolation weights
+        x = self.upscore32(x)  # Shape: (B, n_classes, H, W)
+        
+        # Ensure output exactly matches input size (handle any rounding errors)
         if x.shape[2:] != input_size:
             x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
      
@@ -160,18 +167,30 @@ class FCN32s(nn.Module):
                 m.weight.data.copy_(weight)
     
     def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
-        """Generate bilinear interpolation weights (per-channel upsampling)"""
+        """Generate bilinear interpolation weights (per-channel upsampling)
+        
+        Creates a filter that implements bilinear interpolation for smooth upsampling.
+        This is better than random initialization as it preserves spatial structure.
+        """
+        # Calculate the center of the filter
         factor = (kernel_h + 1) // 2
         if kernel_h % 2 == 1:
-            center = factor - 1
+            center = factor - 1  # Odd kernel size: center is an integer
         else:
-            center = factor - 0.5
+            center = factor - 0.5  # Even kernel size: center is between pixels
+        
+        # Create a grid of coordinates for the filter
         og = np.ogrid[:kernel_h, :kernel_w]
+        
+        # Compute bilinear weights: closer to center = higher weight
+        # Weight decreases linearly with distance from center
         filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
         filt = torch.from_numpy(filt).float()
+        
+        # Create per-channel identity mapping (channel i maps to channel i)
         weight = torch.zeros(in_channels, out_channels, kernel_h, kernel_w)
         for i in range(min(in_channels, out_channels)):
-            weight[i, i, :, :] = filt
+            weight[i, i, :, :] = filt  # Each channel gets the same bilinear filter
         return weight
 
 
@@ -252,29 +271,43 @@ class FCN16s(nn.Module):
         # 7. Upsample fused result by 16x
         # 8. Return output
         
+        # Save input size for final adjustment
         input_size = x.shape[2:]
         
-        x = self.conv1(x)
+        # Encoder: ResNet50 backbone
+        x = self.conv1(x)     # Stride 2
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.maxpool(x)   # Stride 4
 
-        x = self.layer1(x)
-        x = self.layer2(x)  
-        pool4 = self.layer3(x)  
-        x = self.layer4(pool4)
+        x = self.layer1(x)    # Stride 4 (256 channels)
+        x = self.layer2(x)    # Stride 8 (512 channels)
+        
+        # SKIP CONNECTION: Save pool4 (layer3 output) for later fusion
+        pool4 = self.layer3(x)  # Stride 16 (1024 channels) - MID-LEVEL FEATURES
+        
+        # Continue to deepest layer
+        x = self.layer4(pool4)  # Stride 32 (2048 channels) - HIGH-LEVEL FEATURES
 
-        x = self.score_fr(x)
-        pool4 = self.score_pool4(pool4)
+        # Score layers: convert to class predictions
+        x = self.score_fr(x)           # Deep features: stride 32, n_classes channels
+        pool4 = self.score_pool4(pool4)  # Mid features: stride 16, n_classes channels
 
+        # Upsample deep features by 2× (32 → 16) to match pool4 resolution
         x = self.upscore2(x)
+        
+        # Align shapes if needed (handle any size mismatches)
         if x.shape != pool4.shape:
             x = F.interpolate(x, size=pool4.shape[2:], mode='bilinear', align_corners=False)
         
+        # FUSION: Combine deep (coarse) and mid (detailed) features
+        # Element-wise addition merges semantic and spatial information
         x = x + pool4
+        
+        # Final upsample by 16× to restore original resolution
         x = self.upscore16(x)
         
-        # Ensure output matches input size
+        # Ensure output exactly matches input size
         if x.shape[2:] != input_size:
             x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
 
@@ -395,41 +428,52 @@ class FCN8s(nn.Module):
         # ENCODER PATH:
         input_size = x.shape[2:]
         
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.maxpool(x)
-        x = self.layer1(x) # stride 4
-        pool3 = self.layer2(x) # Stride 8, save for skip connection
-        pool4 = self.layer3(pool3)  # Stride 16, save for skip connection
-        x = self.layer4(pool4) # Stride 32
+        # Initial layers (combined for efficiency)
+        x = self.relu(self.bn1(self.conv1(x)))  # Stride 2
+        x = self.maxpool(x)  # Stride 4
+        x = self.layer1(x)   # Stride 4 (256 channels)
         
-        # SCORE LAYERS:
-        score_fr = self.score_fr(x)
-        score_pool4 = self.score_pool4(pool4)
-        score_pool3 = self.score_pool3(pool3)
+        # SKIP CONNECTION 1: Save pool3 (layer2 output) - FINE DETAILS
+        pool3 = self.layer2(x)  # Stride 8 (512 channels) - captures fine spatial details
+        
+        # SKIP CONNECTION 2: Save pool4 (layer3 output) - MID-LEVEL FEATURES  
+        pool4 = self.layer3(pool3)  # Stride 16 (1024 channels) - semantic understanding
+        
+        # Deepest layer - HIGH-LEVEL SEMANTICS
+        x = self.layer4(pool4)  # Stride 32 (2048 channels) - what objects are present
+        
+        # SCORE LAYERS: Convert multi-scale features to class predictions
+        score_fr = self.score_fr(x)          # Deep: stride 32 (semantic, coarse)
+        score_pool4 = self.score_pool4(pool4)  # Mid: stride 16 (structure)
+        score_pool3 = self.score_pool3(pool3)  # Shallow: stride 8 (boundaries)
         
         # PROGRESSIVE UPSAMPLING WITH SKIP CONNECTIONS:
-        # First skip (pool4 at stride 16):
-        upscore2 = self.upscore2(score_fr)  # Upsample 32 -> 16
+        # Strategy: gradually recover spatial detail by fusing features at multiple scales
+        
+        # First fusion: Combine deep (stride 32) with mid-level (stride 16)
+        upscore2 = self.upscore2(score_fr)  # Upsample 32 → 16
 
-        # 11. If shapes don't match, use F.interpolate to resize
+        # Align shapes if needed (handle any size mismatches from conv/deconv)
         if upscore2.shape != score_pool4.shape:
             upscore2 = F.interpolate(upscore2, size=score_pool4.shape[2:], mode='bilinear', align_corners=False)
         
+        # Fuse: deep semantics + mid-level structure
         fuse_pool4 = upscore2 + score_pool4  # Element-wise addition
         
-        # Second skip (pool3 at stride 8):
-        upscore_pool4 = self.upscore_pool4(fuse_pool4)  # Upsample 16 -> 8
+        # Second fusion: Combine fused features (stride 16) with shallow (stride 8)
+        upscore_pool4 = self.upscore_pool4(fuse_pool4)  # Upsample 16 → 8
 
-        # 14. If shapes don't match, use F.interpolate to resize
+        # Align shapes
         if upscore_pool4.shape != score_pool3.shape:
             upscore_pool4 = F.interpolate(upscore_pool4, size=score_pool3.shape[2:], mode='bilinear', align_corners=False)
 
+        # Fuse: semantic understanding + fine spatial details
         fuse_pool3 = upscore_pool4 + score_pool3  # Element-wise addition
         
-        # Final upsampling:
-        out = self.upscore8(fuse_pool3) # Upsample 8 -> 1 (original resolution)
+        # Final upsampling: Restore original resolution
+        out = self.upscore8(fuse_pool3)  # Upsample 8 → 1 (full resolution)
         
-        # Ensure output matches input size
+        # Ensure output exactly matches input size
         if out.shape[2:] != input_size:
             out = F.interpolate(out, size=input_size, mode='bilinear', align_corners=False)
         
@@ -560,30 +604,39 @@ class ASPP(nn.Module):
     def forward(self, x):
         # Task 2.2: Apply all branches and concatenate
         # 1. Save spatial dimensions: size = x.shape[2:]
-        size = x.shape[2:]
+        size = x.shape[2:]  # (H, W) - needed to upsample global features back
         
-        # Branch 1:
-        # 2. feat1 = self.conv1(x)
-        feat1 = self.conv1x1(x)
+        # BRANCH 1: 1×1 convolution (local, fine-grained features)
+        # Captures pixel-level detail without spatial context
+        feat1 = self.conv1x1(x)  # Shape: (B, 256, H, W)
         
-        # Branches 2-4:
-        # 3. feat_atrous = [conv(x) for conv in self.atrous_convs]
-        feat_atrous = [conv(x) for conv in self.atrous_convs]
+        # BRANCHES 2-4: Atrous convolutions with different dilation rates
+        # Each rate captures context at a different scale:
+        #   rate=6:  receptive field ~13×13 (small objects, local context)
+        #   rate=12: receptive field ~25×25 (medium objects)
+        #   rate=18: receptive field ~37×37 (large objects, wider context)
+        # All maintain spatial resolution (no downsampling)
+        feat_atrous = [conv(x) for conv in self.atrous_convs]  # List of 3 tensors, each (B, 256, H, W)
 
-        # Branch 5:
-        # 4. feat_global = self.global_avg_pool(x)
-        feat_global = self.global_avg_pool(x)
+        # BRANCH 5: Global Average Pooling (image-level context)
+        # Captures the overall scene context (e.g., "outdoor", "indoor")
+        # Pools entire feature map to 1×1, then projects to 256 channels
+        feat_global = self.global_avg_pool(x)  # Shape: (B, 256, 1, 1)
 
-        # 5. Interpolate feat_global back to original size using F.interpolate
+        # Upsample global features back to original spatial size
+        # This broadcasts the global context to every spatial location
         feat_global_upsampled = F.interpolate(feat_global, size=size, mode='bilinear', align_corners=False)
+        # Shape: (B, 256, H, W)
 
-        # Concatenation:
-        # 6. feat = torch.cat([feat1] + feat_atrous + [feat_global], dim=1)
+        # CONCATENATION: Combine all 5 branches along channel dimension
+        # Result: [local, scale1, scale2, scale3, global] = 5 × 256 = 1280 channels
         all_features = [feat1] + feat_atrous + [feat_global_upsampled]
-        feat = torch.cat(all_features, dim=1)
+        feat = torch.cat(all_features, dim=1)  # Shape: (B, 1280, H, W)
         
-        # Output projection:
-        return self.conv_out(feat)
+        # FUSION: Project concatenated features back to out_channels (256)
+        # Learns optimal combination of multi-scale information
+        # Includes dropout (0.1) for regularization
+        return self.conv_out(feat)  # Shape: (B, 256, H, W)
 
 
 class DeepLabV3Plus(nn.Module):
@@ -709,53 +762,62 @@ class DeepLabV3Plus(nn.Module):
     def forward(self, x):
         # TODO Task 2.4: Implement forward pass
         # 1. Save input size: size = x.shape[2:]
-        input_size = x.shape[2:]
+        input_size = x.shape[2:]  # (H, W) for final upsampling
         
-        # ENCODER:
-        # 2. x = relu(bn1(conv1(x)))
-        # 3. x = maxpool(x)
-        # 4. low_level_feat = layer1(x) - Save for decoder
-        # 5. x = layer2(low_level_feat)
-        # 6. x = layer3(x)
-        # 7. x = layer4(x)
-
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.maxpool(x)
-        low_level_feat = self.layer1(x)  # Guardar características de bajo nivel (stride 4)
-        x = self.layer2(low_level_feat)
-        x = self.layer3(x)
-        x = self.layer4(x)  # Salida a stride 32
+        # ===== ENCODER PATH =====
+        # Initial layers: reduce spatial resolution while building features
+        x = self.relu(self.bn1(self.conv1(x)))  # Stride 2: H/2 × W/2
+        x = self.maxpool(x)  # Stride 4: H/4 × W/4
         
-        # ASPP:
-        # 8. x = self.aspp(x)
-        x = self.aspp(x) # Salida a stride 32, 256 canales
+        # LOW-LEVEL FEATURES: capture fine spatial details (edges, textures)
+        # These are essential for precise boundary delineation
+        low_level_feat = self.layer1(x)  # Stride 4: H/4 × W/4, 256 channels
+        # SAVE for skip connection in decoder
         
-        # DECODER:
-        # 9. Upsample x to match low_level_feat size using F.interpolate
-        #    Upsample de x (stride 32) a low_level_feat (stride 4)
+        # Continue encoder: build semantic understanding
+        x = self.layer2(low_level_feat)  # Stride 8: H/8 × W/8, 512 channels
+        x = self.layer3(x)  # Stride 16: H/16 × W/16, 1024 channels
+        
+        # HIGH-LEVEL FEATURES: capture semantic meaning (what objects are present)
+        x = self.layer4(x)  # Stride 32: H/32 × W/32, 2048 channels
+        
+        # ===== ASPP MODULE =====
+        # Multi-scale context aggregation with parallel atrous convolutions
+        # Captures objects at different scales (small, medium, large)
+        x = self.aspp(x)  # Stride 32: H/32 × W/32, 256 channels
+        
+        # ===== DECODER PATH =====
+        # Strategy: combine high-level semantics with low-level spatial details
+        
+        # Upsample ASPP output by 4×: stride 32 → stride 4
+        # This brings semantic features to the same resolution as low-level features
         x = F.interpolate(x, size=low_level_feat.shape[2:], mode='bilinear', align_corners=False)
+        # Shape: (B, 256, H/4, W/4)
 
-        # 10. low_level_feat = self.low_level_conv(low_level_feat)
-        #     Proyectar características de bajo nivel
-        low_level_feat = self.low_level_conv(low_level_feat) # Salida a stride 4, 48 canales
+        # Project low-level features: 256 → 48 channels
+        # Reduces dimensionality to prevent low-level features from dominating
+        low_level_feat = self.low_level_conv(low_level_feat)
+        # Shape: (B, 48, H/4, W/4)
 
-        # 11. x = torch.cat([x, low_level_feat], dim=1) - Concatenate along channel dimension
-        #     Concatenar características
-        x = torch.cat([x, low_level_feat], dim=1) # Salida: 256 + 48 = 304 canales
+        # CONCATENATE: merge semantic (256) + spatial (48) = 304 channels
+        # This fusion combines "what" (semantics) with "where" (boundaries)
+        x = torch.cat([x, low_level_feat], dim=1)
+        # Shape: (B, 304, H/4, W/4)
 
-        # 12. x = self.decoder(x)
-        #     Pasar por el decodificador
-        x = self.decoder(x) # Salida: 256 canales, stride 4
+        # REFINE: two 3×3 convolutions to blend fused features
+        # Learns optimal combination of semantic and spatial information
+        x = self.decoder(x)
+        # Shape: (B, 256, H/4, W/4)
         
-        # CLASSIFICATION:
-        # 13. x = self.classifier(x)
-        x = self.classifier(x) # Salida: n_classes, stride 4
+        # ===== CLASSIFICATION =====
+        # Final 1×1 conv: map 256 features to n_classes logits
+        x = self.classifier(x)
+        # Shape: (B, n_classes, H/4, W/4)
 
-        # 14. Upsample x to original input size using F.interpolate
-        #     Upsample final a tamaño original
+        # Final upsample by 4×: restore original resolution
         x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
+        # Shape: (B, n_classes, H, W)
 
-        # 15. Return x
         return x
 
 
@@ -924,15 +986,24 @@ class MiniSAM(nn.Module):
         self.upsample = nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False)
         
     def encode_image(self, x):
-        """Extract image features"""
+        """Extract image features using lightweight MobileNetV3 encoder.
+        
+        Args:
+            x: Input image tensor (B, 3, H, W)
+            
+        Returns:
+            features: Encoded features (B, embed_dim, H/8, W/8)
+        """
         # Task 3.4: Encode image
-        # 1. features = self.image_encoder(x) - Output: B x 576 x H/8 x W/8
-        features = self.image_encoder(x)
+        # Extract features using MobileNetV3-Small backbone
+        # This is much lighter than ResNet50: ~2M params vs ~25M
+        # Output stride: 8 (less aggressive downsampling than FCN/DeepLab)
+        features = self.image_encoder(x)  # Shape: (B, 96, H/8, W/8)
         
-        # 2. features = self.img_proj(features) - Output: B x embed_dim x H/8 x W/8
-        features = self.img_proj(features)
+        # Project to embedding dimension (96 → embed_dim, typically 256)
+        # This creates a common feature space for fusion with prompts
+        features = self.img_proj(features)  # Shape: (B, embed_dim, H/8, W/8)
         
-        # 3. Return features
         return features
     
     def encode_prompts(self, points=None, point_labels=None, boxes=None, img_size=None):
@@ -1121,84 +1192,90 @@ def sample_points_from_mask(masks, n_points=5):
     """
     # Task 3.5: Implement point sampling
     # 1. Get B, H, W = masks.shape
-    B, H, W = masks.shape
-    device = masks.device
+    B, H, W = masks.shape  # Batch size, Height, Width
+    device = masks.device  # Ensure tensors are on same device (cuda/cpu)
     
     # 2. Create empty lists: points_list = [], labels_list = []
-    points_list = []
-    labels_list = []
+    points_list = []  # Will store (n_points, 2) for each image
+    labels_list = []  # Will store (n_points,) for each image
     
-    # FOR EACH IMAGE IN BATCH:
+    # FOR EACH IMAGE IN BATCH (process independently):
     # 3. For b in range(B):
     for b in range(B):
         #    - Get mask = masks[b]
-        mask = masks[b]
-        valid_mask = (mask != 255)
+        mask = masks[b]  # Single image mask: (H, W) with class indices
+        valid_mask = (mask != 255)  # Exclude ignore pixels (borders/uncertain regions)
         
         #    SAMPLE FOREGROUND POINTS (50%):
         #    4. fg_indices = torch.nonzero(mask > 0) - Find all foreground pixels
-        fg_indices = torch.nonzero((mask > 0) & valid_mask, as_tuple=False)
+        # Foreground = any object class (1-20 for VOC), excluding background (0) and ignore (255)
+        fg_indices = torch.nonzero((mask > 0) & valid_mask, as_tuple=False)  # Shape: (num_fg_pixels, 2) - [row, col] coords
         
         #    5. If fg_indices not empty:
         if len(fg_indices) > 0:
             #       - Randomly sample n_points//2 indices
-            n_fg = n_points // 2
-            sampled_idx = torch.randint(0, len(fg_indices), (n_fg,), device=device)
-            fg_points = fg_indices[sampled_idx].float()
+            n_fg = n_points // 2  # Half of points are foreground (e.g., 2-3 for n_points=5)
+            sampled_idx = torch.randint(0, len(fg_indices), (n_fg,), device=device)  # Random indices into fg_indices
+            fg_points = fg_indices[sampled_idx].float()  # Sample n_fg coordinates: (n_fg, 2)
             
             #       - Normalize to [0,1]: divide by [H, W]
-            fg_points[:, 0] /= H
-            fg_points[:, 1] /= W
+            # Model expects normalized coordinates (0=top/left, 1=bottom/right)
+            fg_points[:, 0] /= H  # Normalize row (y-coordinate)
+            fg_points[:, 1] /= W  # Normalize column (x-coordinate)
             
             #       - Create labels as ones
-            fg_labels = torch.ones(n_fg, dtype=torch.long, device=masks.device)
+            fg_labels = torch.ones(n_fg, dtype=torch.long, device=masks.device)  # Label=1 means foreground click
         #    6. Else: create empty tensors
         else:
+            # Edge case: image has no foreground (e.g., all background)
             fg_points = torch.zeros(0, 2, device=device)
             fg_labels = torch.zeros(0, dtype=torch.long, device=device)
         
         #    SAMPLE BACKGROUND POINTS (50%):
         #    7. bg_indices = torch.nonzero(mask == 0) - Find all background pixels
-        bg_indices = torch.nonzero((mask == 0) & valid_mask, as_tuple=False)
+        bg_indices = torch.nonzero((mask == 0) & valid_mask, as_tuple=False)  # Background = class 0
         
         #    8. If bg_indices not empty:
         if len(bg_indices) > 0:
             #       - Randomly sample n_points//2 indices
-            n_bg = n_points - (n_points // 2)  # Remaining points
+            n_bg = n_points - (n_points // 2)  # Remaining points (e.g., 2-3 for n_points=5)
             sampled_idx = torch.randint(0, len(bg_indices), (n_bg,), device=device)
-            bg_points = bg_indices[sampled_idx].float()
+            bg_points = bg_indices[sampled_idx].float()  # Sample n_bg coordinates: (n_bg, 2)
             
             #       - Normalize to [0,1]: divide by [H, W]
-            bg_points[:, 0] /= H
-            bg_points[:, 1] /= W
+            bg_points[:, 0] /= H  # Normalize row
+            bg_points[:, 1] /= W  # Normalize column
             
             #       - Create labels as zeros
-            bg_labels = torch.zeros(n_bg, dtype=torch.long, device=masks.device)
+            bg_labels = torch.zeros(n_bg, dtype=torch.long, device=masks.device)  # Label=0 means background click
         #    9. Else: create empty tensors
         else:
+            # Edge case: image has no background (rare)
             bg_points = torch.zeros(0, 2, device=device)
             bg_labels = torch.zeros(0, dtype=torch.long, device=device)
         
         #    COMBINE AND PAD:
         #    10. Concatenate fg_points and bg_points
-        combined_points = torch.cat([fg_points, bg_points], dim=0)
+        combined_points = torch.cat([fg_points, bg_points], dim=0)  # Stack foreground + background points
         
         #    11. Concatenate fg_labels and bg_labels
-        combined_labels = torch.cat([fg_labels, bg_labels], dim=0)
+        combined_labels = torch.cat([fg_labels, bg_labels], dim=0)  # Stack corresponding labels
         
         #    12. If total points < n_points: pad with zeros
+        # Handle edge case where image doesn't have enough fg/bg pixels
         if len(combined_points) < n_points:
             pad_size = n_points - len(combined_points)
-            pad_points = torch.zeros(pad_size, 2, device=device)
-            pad_labels = torch.zeros(pad_size, dtype=torch.long, device=device)
+            pad_points = torch.zeros(pad_size, 2, device=device)  # Dummy points (will be ignored by model)
+            pad_labels = torch.zeros(pad_size, dtype=torch.long, device=device)  # Dummy labels
             combined_points = torch.cat([combined_points, pad_points], dim=0)
             combined_labels = torch.cat([combined_labels, pad_labels], dim=0)
         
         #    13. Append to lists
-        points_list.append(combined_points)
-        labels_list.append(combined_labels)
+        points_list.append(combined_points)  # Add to batch: (n_points, 2)
+        labels_list.append(combined_labels)  # Add to batch: (n_points,)
     
     # 14. Stack lists and return torch.stack(points_list), torch.stack(labels_list)
+    # Convert list of tensors to batched tensors: (B, n_points, 2) and (B, n_points)
     return torch.stack(points_list), torch.stack(labels_list)
 
 
@@ -1573,31 +1650,38 @@ def compute_batch_iou(pred, target, ignore_index=255):
         >>> print(f"Image IoU: {iou.item():.2%}")  # e.g., 60%
     """
     # Task 4.6: Implement batch IoU
-    # 1. Get B = pred.shape[0]
+    # Get batch size
     B = pred.shape[0] 
 
-    # 2. Create empty list: ious = []
+    # Create list to store IoU for each image in the batch
     ious = []
 
-    # 3. For each b in range(B):
-        #    - intersection = ((pred[b] == target[b]) & (target[b] > 0)).float().sum()
-        #    - union = ((pred[b] > 0) | (target[b] > 0)).float().sum()
-        #    - iou = intersection / (union + 1e-6)
-        #    - Append iou
-    for b in range(B): #cada imagen del batch
+    # Compute IoU independently for each image
+    # This allows per-image quality assessment (needed for MiniSAM IoU head)
+    for b in range(B):  # Process each image separately
+        # Create valid mask (exclude ignore_index pixels)
         valid_mask = (target[b] != ignore_index)
-        pred_pos = (pred[b] > 0) & valid_mask
-        target_pos = (target[b] > 0) & valid_mask
+        
+        # Binary masks: foreground (any class > 0) vs background (class 0)
+        pred_pos = (pred[b] > 0) & valid_mask  # Predicted foreground pixels
+        target_pos = (target[b] > 0) & valid_mask  # Actual foreground pixels
+        
+        # Compute intersection: pixels correctly predicted as foreground
         intersection = ((pred[b] == target[b]) & target_pos).float().sum()
+        
+        # Compute union: all pixels that are foreground in pred OR target
         union = (pred_pos | target_pos).float().sum()
+        
+        # Handle edge case: both pred and target have no foreground
         if union == 0:
-            iou = torch.tensor(1.0, device=pred.device)  # Both empty
+            iou = torch.tensor(1.0, device=pred.device)  # Perfect agreement (both empty)
         else:
-            iou = intersection / (union + 1e-6)
+            iou = intersection / (union + 1e-6)  # Add epsilon to prevent division by zero
+        
         ious.append(iou)
 
-    # 4. Return torch.stack(ious)
-    return torch.stack(ious)
+    # Stack individual IoUs into a batch tensor
+    return torch.stack(ious)  # Shape: (B,)
 
 
 # ================== Training Functions ==================
@@ -1646,53 +1730,55 @@ def train_epoch_fcn(model, dataloader, optimizer, criterion, device, scaler=None
         - Batch size 32, image size 512×512
         - ~1500 iterations for full VOC training set
     """
-    model.train()
-    total_loss = 0
-    total_miou = 0
+    model.train()  # Enable training mode (dropout, batchnorm in training mode)
+    total_loss = 0  # Accumulate loss for entire epoch
+    total_miou = 0  # Accumulate mIoU for monitoring training progress
     
     # Task 5.1: Implement training loop
     # 1. For images, masks in dataloader:
     # 2. Move to device: images, masks = images.to(device), masks.to(device)
     for images, masks in tqdm(dataloader, desc='Training'):
-        images, masks = images.to(device), masks.to(device)
+        # Move batch to GPU (async transfer for speed)
+        images, masks = images.to(device), masks.to(device)  # images: (B, 3, H, W), masks: (B, H, W)
 
         # 3. Zero gradients: optimizer.zero_grad()
-        optimizer.zero_grad()
+        optimizer.zero_grad()  # Clear gradients from previous iteration
         
-        # Mixed Precision Training
+        # Mixed Precision Training (AMP) - 2× faster, 50% less VRAM
         if scaler is not None:
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda'):  # Enable automatic mixed precision (fp16/bf16)
                 # 4. Forward pass: outputs = model(images)
-                outputs = model(images)
+                outputs = model(images)  # outputs: (B, num_classes, H, W) - logits per pixel
                 # 5. Compute loss: loss = criterion(outputs, masks)
-                loss = criterion(outputs, masks)
+                loss = criterion(outputs, masks)  # CombinedLoss: CE + Dice + Focal
             
-            # 6. Backward with gradient scaling
-            scaler.scale(loss).backward()
+            # 6. Backward with gradient scaling (prevents underflow in fp16)
+            scaler.scale(loss).backward()  # Scale loss before backward to prevent gradient underflow
             # 7. Update weights with unscaling
-            scaler.step(optimizer)
-            scaler.update()
+            scaler.step(optimizer)  # Unscale gradients, then optimizer step
+            scaler.update()  # Update scaler for next iteration (dynamic loss scaling)
         else:
+            # Standard fp32 training (no AMP)
             # 4. Forward pass: outputs = model(images)
-            outputs = model(images)
+            outputs = model(images)  # outputs: (B, num_classes, H, W)
             # 5. Compute loss: loss = criterion(outputs, masks)
             loss = criterion(outputs, masks)
             # 6. Backward: loss.backward()
-            loss.backward()
+            loss.backward()  # Compute gradients
             # 7. Update weights: optimizer.step()
-            optimizer.step()
+            optimizer.step()  # Update model parameters
 
         # 8. Calculate metrics: pred = outputs.argmax(dim=1), then miou = calculate_miou(pred, masks, num_classes)
-        pred = outputs.argmax(dim=1)
-        num_classes = outputs.shape[1]
-        miou, _ = calculate_miou(pred, masks, num_classes=num_classes, ignore_index=255)
+        pred = outputs.argmax(dim=1)  # pred: (B, H, W) - class indices (0-20)
+        num_classes = outputs.shape[1]  # Infer num_classes from output channels (21 for VOC)
+        miou, _ = calculate_miou(pred, masks, num_classes=num_classes, ignore_index=255)  # ignore border pixels
 
         # 9. Accumulate: total_loss += loss.item(), total_miou += miou
-        total_loss = total_loss + loss.item()
-        total_miou = total_miou + miou
+        total_loss = total_loss + loss.item()  # loss.item() converts to Python float
+        total_miou = total_miou + miou  # Batch mIoU (averaged over images in batch)
 
     # 10. Return averages: total_loss / len(dataloader), total_miou / len(dataloader)
-    return total_loss / len(dataloader), total_miou / len(dataloader)
+    return total_loss / len(dataloader), total_miou / len(dataloader)  # Epoch averages
 
 
 def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_points=5, scaler=None):
@@ -1752,47 +1838,52 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
         - More points (n_points) = better segmentation but slower training
         - Typical n_points: 5-10 for training, 1-3 for fast inference
     """
-    model.train()
-    total_loss = 0
-    total_miou = 0
-    dice_fn = DiceLoss(ignore_index=255)
+    model.train()  # Enable training mode
+    total_loss = 0  # Accumulate total loss (segmentation + IoU)
+    total_miou = 0  # Track segmentation quality
+    dice_fn = DiceLoss(ignore_index=255)  # Pre-instantiate Dice loss for efficiency
     
     # Task 5.2: Implement Mini-SAM training
     # 1. For images, masks in dataloader:
     for images, masks in tqdm(dataloader, desc='Training Mini-SAM'):
         # 2. Move to device
-        images, masks = images.to(device), masks.to(device)
+        images, masks = images.to(device), masks.to(device)  # images: (B, 3, H, W), masks: (B, H, W)
         
         # 3. Sample points from masks: points, point_labels = sample_points_from_mask(masks, n_points)
-        points, point_labels = sample_points_from_mask(masks, n_points)
+        # Simulate user clicks: 50% foreground + 50% background points
+        points, point_labels = sample_points_from_mask(masks, n_points)  # points: (B, n_points, 2), labels: (B, n_points)
         
         # 4. Zero gradients
-        optimizer.zero_grad()
+        optimizer.zero_grad()  # Clear previous gradients
         
-        # Mixed Precision Training
+        # Mixed Precision Training (AMP)
         if scaler is not None:
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda'):  # Enable fp16/bf16 for speed
                 # 5. Forward pass: mask_logits, iou_pred = model(images, points, point_labels)
-                mask_logits, iou_pred = model(images, points, point_labels)
+                # MiniSAM returns: mask predictions + quality prediction (IoU head)
+                mask_logits, iou_pred = model(images, points, point_labels)  # logits: (B, num_classes, H, W), iou: (B, 1)
                 
                 # 6. Compute losses:
+                #    SEGMENTATION LOSSES:
                 #    - ce_loss = F.cross_entropy(mask_logits, masks)
-                ce_loss = F.cross_entropy(mask_logits, masks, ignore_index=255)
+                ce_loss = F.cross_entropy(mask_logits, masks, ignore_index=255)  # Pixel-wise classification loss
                 
                 #    - dice_loss = DiceLoss()(mask_logits, masks)
-                dice_loss = dice_fn(mask_logits, masks)
+                dice_loss = dice_fn(mask_logits, masks)  # Region-based overlap loss
                 
                 #    - pred_masks = mask_logits.argmax(dim=1)
-                pred_masks = mask_logits.argmax(dim=1)
+                pred_masks = mask_logits.argmax(dim=1)  # Convert logits to class indices: (B, H, W)
                 
+                #    IOU HEAD LOSS (quality prediction):
                 #    - true_iou = compute_batch_iou(pred_masks, masks)
-                true_iou = compute_batch_iou(pred_masks, masks)
+                true_iou = compute_batch_iou(pred_masks, masks)  # Ground truth IoU: (B,) - one value per image
                 
                 #    - iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
-                iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
+                iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)  # Supervise IoU prediction head
                 
                 # 7. Combined loss: loss = ce_loss + dice_loss + 0.1 * iou_loss
-                loss = ce_loss + dice_loss + 0.1 * iou_loss
+                # Multi-objective: segment well + predict quality accurately
+                loss = ce_loss + dice_loss + 0.1 * iou_loss  # Weight 0.1: IoU loss is auxiliary
             
             # 8. Backward with gradient scaling
             scaler.scale(loss).backward()
@@ -1878,44 +1969,46 @@ def validate(model, dataloader, device, num_classes=None, is_minisam=False):
         - RTX 3090, batch_size=32, VOC val set (~1500 images): ~30 seconds
         - No AMP during validation (reproducibility)
     """
-    model.eval()
-    total_miou = 0
-    total_pa = 0 # pixel accuracy
+    model.eval()  # Disable training mode (dropout off, batchnorm uses running stats)
+    total_miou = 0  # Accumulate mIoU across all batches
+    total_pa = 0  # Accumulate pixel accuracy
     
     # Task 5.3: Implement validation
     # 1. Use torch.no_grad() context
     # 2. For images, masks in dataloader:
     # 3. Move to device
-    with torch.no_grad():
+    with torch.no_grad():  # Disable gradient computation (saves memory, speeds up inference)
         for images, masks in tqdm(dataloader, desc='Validation'):
-            images, masks = images.to(device), masks.to(device)
+            images, masks = images.to(device), masks.to(device)  # Move batch to GPU
     
             # 4. If is_minisam:
-            #    - Sample points
+            #    - Sample points (simulate user prompts for fair evaluation)
             #    - outputs, _ = model(images, points, point_labels)
             #    Else:
-            #    - outputs = model(images)
+            #    - outputs = model(images) (automatic models: no prompts needed)
 
             if is_minisam:
-                points, point_labels = sample_points_from_mask(masks, n_points=5)
-                outputs, _ = model(images, points, point_labels)
+                # MiniSAM requires prompts even during validation
+                points, point_labels = sample_points_from_mask(masks, n_points=5)  # Simulate 5 user clicks
+                outputs, _ = model(images, points, point_labels)  # outputs: (B, num_classes, H, W), discard iou_pred
             else:
-                outputs = model(images)
+                # FCN/DeepLabV3+: fully automatic (no prompts)
+                outputs = model(images)  # outputs: (B, num_classes, H, W)
 
             # 5. Get predictions: pred = outputs.argmax(dim=1)
-            pred = outputs.argmax(dim=1)
+            pred = outputs.argmax(dim=1)  # Convert logits to class indices: (B, H, W)
 
-            # 6. Calculate metrics
-            eval_num_classes = outputs.shape[1] if num_classes is None else num_classes
-            miou, _ = calculate_miou(pred, masks, eval_num_classes, ignore_index=255)
-            pa = calculate_pixel_accuracy(pred, masks, ignore_index=255)
+            # 6. Calculate metrics (ignore border pixels with value 255)
+            eval_num_classes = outputs.shape[1] if num_classes is None else num_classes  # Infer from output channels
+            miou, _ = calculate_miou(pred, masks, eval_num_classes, ignore_index=255)  # Mean IoU across classes
+            pa = calculate_pixel_accuracy(pred, masks, ignore_index=255)  # Percentage of correct pixels
 
-            # 7. Accumulate
-            total_miou = total_miou + miou
-            total_pa = total_pa + pa
+            # 7. Accumulate metrics for averaging
+            total_miou = total_miou + miou  # Batch mIoU
+            total_pa = total_pa + pa  # Batch pixel accuracy
 
-    # 8. Return averages
-    return total_miou / len(dataloader), total_pa / len(dataloader)
+    # 8. Return averages over entire validation set
+    return total_miou / len(dataloader), total_pa / len(dataloader)  # Epoch-level metrics
 
 
 def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=False, save_path='predictions.png'):
@@ -1970,44 +2063,55 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
         - Common errors: Confusion between similar classes (dog vs cat),
                         missing thin structures, boundary inaccuracies
     """
-    model.eval()
+    model.eval()  # Set to evaluation mode
     
     # Task 5.4: Implement visualization
     # 1. Get one batch: images_batch, masks_batch = next(iter(dataloader))
     # 2. Take first num_samples and move to device
-    with torch.no_grad():
-        images_batch, masks_batch = next(iter(dataloader))
-        images_batch, masks_batch = images_batch.to(device), masks_batch.to(device)
+    with torch.no_grad():  # No gradients needed for visualization
+        images_batch, masks_batch = next(iter(dataloader))  # Get first batch from dataloader
+        images_batch, masks_batch = images_batch.to(device), masks_batch.to(device)  # Move to GPU
     
     # 3. Generate predictions (with or without prompts based on is_minisam)
         if is_minisam:
-            points, point_labels = sample_points_from_mask(masks_batch, n_points=5)
-            outputs, _ = model(images_batch, points, point_labels)
+            # MiniSAM: needs prompts even for visualization
+            points, point_labels = sample_points_from_mask(masks_batch, n_points=5)  # Simulate user clicks
+            outputs, _ = model(images_batch, points, point_labels)  # Get predictions + discard IoU pred
         else:
-            outputs = model(images_batch)
-        predictions = outputs.argmax(dim=1)
+            # FCN/DeepLabV3+: automatic segmentation
+            outputs = model(images_batch)  # Direct forward pass, no prompts
+        predictions = outputs.argmax(dim=1)  # Convert logits to class indices: (B, H, W)
 
-        # Opcional: limitar el número de muestras para la visualización
+        # Limit number of samples for visualization (avoid cluttered plots)
         batch_size = images_batch.size(0)
-        num_to_plot = min(num_samples, batch_size)
+        num_to_plot = min(num_samples, batch_size)  # Don't exceed batch size
         
-        # Seleccionar solo las muestras que se van a visualizar
-        images_to_plot = images_batch[:num_to_plot]
-        masks_to_plot = masks_batch[:num_to_plot]
-        predictions_to_plot = predictions[:num_to_plot]
+        # Select subset of batch to visualize
+        images_to_plot = images_batch[:num_to_plot]  # First N images: (N, 3, H, W)
+        masks_to_plot = masks_batch[:num_to_plot]  # Ground truth: (N, H, W)
+        predictions_to_plot = predictions[:num_to_plot]  # Model predictions: (N, H, W)
 
     # 4. Create figure with subplots: (num_samples, 3)
     # 5. For each sample, plot:
-    #    - Column 0: Input image
-    #    - Column 1: Ground truth mask
-    #    - Column 2: Predicted mask
+    #    - Column 0: Input image (denormalized from ImageNet stats)
+    #    - Column 1: Ground truth mask (colored by class)
+    #    - Column 2: Predicted mask (colored by class)
     # 6. Save figure
-    fig = plot_segmentation_results(images=images_to_plot, masks=masks_to_plot, predictions=predictions_to_plot, title=f"Segmentation Results (First {num_to_plot} Samples)")
-    plt.show()
-    fig.savefig(save_path)
+    # plot_segmentation_results from lab05_utils handles:
+    #   - Denormalization: reverses mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    #   - Colormap: tab20 for distinct class colors
+    #   - Layout: side-by-side comparison (Input | GT | Prediction)
+    fig = plot_segmentation_results(
+        images=images_to_plot,
+        masks=masks_to_plot,
+        predictions=predictions_to_plot,
+        title=f"Segmentation Results (First {num_to_plot} Samples)"
+    )
+    plt.show()  # Display interactively (if running in notebook/GUI)
+    fig.savefig(save_path, dpi=300, bbox_inches='tight')  # Save high-res image
     print(f"Saved predictions to {save_path}")
 
-    return fig
+    return fig  # Return figure object for further customization
 
 
 # ================== Dataset Class ==================
@@ -2193,49 +2297,66 @@ class VOCSegmentationDataset(Dataset):
     def _apply_augmentation(self, image, mask):
         """Apply data augmentation transforms to image and mask"""
         
-        # 1. Random horizontal flip (50% probability)
-        if random.random() > 0.5:
-            image = TF.hflip(image)
-            mask = TF.hflip(mask)
+        # ==================== DATA AUGMENTATION PIPELINE ====================
+        # Apply strong augmentation to training images for better generalization
+        # All transformations applied to BOTH image and mask (synchronized)
         
-        # 2. Random scale (0.5x to 2.0x)
-        scale = random.uniform(0.5, 2.0)
-        w, h = image.size
-        new_w, new_h = int(w * scale), int(h * scale)
-        image = TF.resize(image, [new_h, new_w], interpolation=Image.BILINEAR)
-        mask = TF.resize(mask, [new_h, new_w], interpolation=Image.NEAREST)
+        # 1. Random horizontal flip (50% probability)
+        # - Mirrors image left-right (person facing left → person facing right)
+        # - Preserves semantic content (objects still recognizable)
+        if random.random() > 0.5:
+            image = TF.hflip(image)  # Flip image
+            mask = TF.hflip(mask)  # Flip mask (must match image flip)
+        
+        # 2. Random scale (0.5× to 2.0×)
+        # - Handles objects at different scales (near vs far)
+        # - Critical for scale invariance (recognize cats at any size)
+        # - BILINEAR for image (smooth), NEAREST for mask (preserve class indices)
+        scale = random.uniform(0.5, 2.0)  # Random zoom factor
+        w, h = image.size  # Original dimensions
+        new_w, new_h = int(w * scale), int(h * scale)  # Scaled dimensions
+        image = TF.resize(image, [new_h, new_w], interpolation=Image.BILINEAR)  # Smooth resize
+        mask = TF.resize(mask, [new_h, new_w], interpolation=Image.NEAREST)  # No interpolation (class indices)
         
         # 3. Random crop to target size (with padding if needed)
-        w, h = image.size
+        # - Extracts diverse viewpoints (top-left corner vs center vs bottom-right)
+        # - Pads with zeros (image) or 255/ignore (mask) if too small
+        w, h = image.size  # Current dimensions after scaling
         if w < self.image_size or h < self.image_size:
-            # Pad if image is smaller than target
-            pad_h = max(self.image_size - h, 0)
-            pad_w = max(self.image_size - w, 0)
-            image = TF.pad(image, [0, 0, pad_w, pad_h], fill=0)
-            mask = TF.pad(mask, [0, 0, pad_w, pad_h], fill=255)
-            w, h = image.size
+            # Pad if image is smaller than target (happens with scale < 1.0)
+            pad_h = max(self.image_size - h, 0)  # How much to pad vertically
+            pad_w = max(self.image_size - w, 0)  # How much to pad horizontally
+            image = TF.pad(image, [0, 0, pad_w, pad_h], fill=0)  # Pad image with black (0)
+            mask = TF.pad(mask, [0, 0, pad_w, pad_h], fill=255)  # Pad mask with ignore (255)
+            w, h = image.size  # Update dimensions after padding
         
-        # Random crop
-        i = random.randint(0, h - self.image_size)
-        j = random.randint(0, w - self.image_size)
-        image = TF.crop(image, i, j, self.image_size, self.image_size)
-        mask = TF.crop(mask, i, j, self.image_size, self.image_size)
+        # Random crop (extract target_size × target_size patch from random location)
+        i = random.randint(0, h - self.image_size)  # Random top coordinate
+        j = random.randint(0, w - self.image_size)  # Random left coordinate
+        image = TF.crop(image, i, j, self.image_size, self.image_size)  # Crop image
+        mask = TF.crop(mask, i, j, self.image_size, self.image_size)  # Crop mask (same location)
         
         # 4. Color jitter (brightness, contrast, saturation)
+        # - Robustness to lighting conditions (sunny vs cloudy, indoor vs outdoor)
+        # - Range: ±20% per component (subtle changes, not unrealistic)
+        # - Applied independently with 50% probability each
         if random.random() > 0.5:
-            image = TF.adjust_brightness(image, random.uniform(0.8, 1.2))
+            image = TF.adjust_brightness(image, random.uniform(0.8, 1.2))  # Brightness: 80%-120%
         if random.random() > 0.5:
-            image = TF.adjust_contrast(image, random.uniform(0.8, 1.2))
+            image = TF.adjust_contrast(image, random.uniform(0.8, 1.2))  # Contrast: 80%-120%
         if random.random() > 0.5:
-            image = TF.adjust_saturation(image, random.uniform(0.8, 1.2))
+            image = TF.adjust_saturation(image, random.uniform(0.8, 1.2))  # Saturation: 80%-120%
         
         # 5. Random rotation (-10° to +10°)
+        # - Small rotations for robustness (objects not always perfectly upright)
+        # - Larger rotations (e.g., 90°) could distort objects unrealistically
+        # - BILINEAR for image, NEAREST for mask (preserve class indices)
         if random.random() > 0.5:
-            angle = random.uniform(-10, 10)
-            image = TF.rotate(image, angle, interpolation=Image.BILINEAR)
-            mask = TF.rotate(mask, angle, interpolation=Image.NEAREST)
+            angle = random.uniform(-10, 10)  # Random angle in degrees
+            image = TF.rotate(image, angle, interpolation=Image.BILINEAR)  # Smooth rotation
+            mask = TF.rotate(mask, angle, interpolation=Image.NEAREST)  # No interpolation
         
-        return image, mask
+        return image, mask  # Return augmented image and mask
 
 
 # ================== Main Training Script ==================
@@ -2319,218 +2440,235 @@ def main(model_name=None):
         - NaN loss: Check initialization (don't reinitialize pretrained layers)
     """
     
+    # CONFIGURATION DICTIONARY - all training hyperparameters
     config = {
         'model': model_name or 'fcn8s',  # Options: 'fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam'
-        'n_classes': 21,
-        'batch_size': 32,  # RTX 3090: 8→32 (4x increase with 24GB VRAM)
-        'learning_rate': 3e-4,  # Increased LR for larger batch size (linear scaling)
+        'n_classes': 21,  # PASCAL VOC 2012: background + 20 object classes
+        'batch_size': 32,  # RTX 3090: 8→32 (4× increase with 24GB VRAM, adjust down if OOM)
+        'learning_rate': 3e-4,  # Increased LR for larger batch size (linear scaling rule)
         'epochs': 100,  # Increased from 30 for better convergence with augmentation
-        'device': device,
+        'device': device,  # Detected earlier: cuda if available, else cpu
         'image_size': 512,  # RTX 3090: 256→512 (higher resolution for better accuracy)
-        'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val',
-        'num_workers': min(8, os.cpu_count()), # Multi-threaded data loading (adjust based on CPU cores)
-        'use_amp': True,  # Automatic Mixed Precision for faster training
-        'weight_decay': 1e-4,  # L2 regularization
-        'warmup_epochs': 3,  # Learning rate warm-up
+        'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val',  # VOC dataset root
+        'num_workers': min(8, os.cpu_count()),  # Multi-threaded data loading (adjust based on CPU cores)
+        'use_amp': True,  # Automatic Mixed Precision for 2× faster training (fp16/bf16)
+        'weight_decay': 1e-4,  # L2 regularization (prevents overfitting)
+        'warmup_epochs': 3,  # Learning rate warm-up period (prevents early instability)
         'use_augmentation': True,  # Enable data augmentation for better generalization
     }
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # Get current script directory for saving outputs
     
     print(f"Training {config['model']} for {config['epochs']} epochs")
     
-    # Task 6.1: Setup data loaders
+    # ==================== TASK 6.1: SETUP DATA LOADERS ====================
     print("\n[1/5] Setting up data loaders...")
     
-    # Create datasets
+    # Create datasets (handles loading images and masks)
     train_dataset = VOCSegmentationDataset(
         root_dir=config['data_dir'],
-        split='train',
+        split='train',  # Training split (~1,464 images)
         image_size=config['image_size'],
-        use_augmentation=config.get('use_augmentation', True)
+        use_augmentation=config.get('use_augmentation', True)  # Enable augmentation for training
     )
     
     val_dataset = VOCSegmentationDataset(
         root_dir=config['data_dir'],
-        split='val',
+        split='val',  # Validation split (~1,449 images)
         image_size=config['image_size'],
-        use_augmentation=False  # No augmentation for validation
+        use_augmentation=False  # NO augmentation for validation (deterministic evaluation)
     )
     
-    # Create data loaders
+    # Create data loaders (handles batching, shuffling, parallel loading)
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config['batch_size'],
-        shuffle=True,
-        num_workers=config.get('num_workers', 4),  # Parallel data loading
-        pin_memory=True if torch.cuda.is_available() else False
+        batch_size=config['batch_size'],  # 32 images per batch
+        shuffle=True,  # Randomize order each epoch (prevents overfitting to sequence)
+        num_workers=config.get('num_workers', 4),  # Parallel data loading (4-8 workers recommended)
+        pin_memory=True if torch.cuda.is_available() else False  # Faster GPU transfer
     )
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
+        batch_size=config['batch_size'],  # Same batch size as training
+        shuffle=False,  # NO shuffling for validation (reproducible results)
         num_workers=config.get('num_workers', 4),
         pin_memory=True if torch.cuda.is_available() else False
     )
     
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     
-    # Task 6.2: Create model
+    # ==================== TASK 6.2: CREATE MODEL ====================
     print("\n[2/5] Creating model...")
     
-    # Initialize model based on config
+    # Initialize model based on config (factory pattern)
     if config['model'] == 'fcn32s':
-        model = FCN32s(n_classes=config['n_classes'])
+        model = FCN32s(n_classes=config['n_classes'])  # Baseline FCN (32× downsampling)
     elif config['model'] == 'fcn16s':
-        model = FCN16s(n_classes=config['n_classes'])
+        model = FCN16s(n_classes=config['n_classes'])  # FCN with one skip connection
     elif config['model'] == 'fcn8s':
-        model = FCN8s(n_classes=config['n_classes'])
+        model = FCN8s(n_classes=config['n_classes'])  # FCN with two skip connections (best FCN)
     elif config['model'] == 'deeplabv3plus':
-        model = DeepLabV3Plus(n_classes=config['n_classes'])
+        model = DeepLabV3Plus(n_classes=config['n_classes'])  # State-of-the-art with ASPP
     elif config['model'] == 'minisam':
-        model = MiniSAM(n_classes=config['n_classes'])
+        model = MiniSAM(n_classes=config['n_classes'])  # Interactive model with prompts
     else:
         raise ValueError(f"Unknown model: {config['model']}")
     
-    # Move model to device
-    model = model.to(config['device'])
+    # Move model to device (GPU if available, CPU otherwise)
+    model = model.to(config['device'])  # Transfer all parameters and buffers to GPU
     
-    # Count parameters
-    num_params = sum(p.numel() for p in model.parameters())
+    # Count parameters (useful for comparing model complexity)
+    num_params = sum(p.numel() for p in model.parameters())  # Total trainable params
     print(f"Model: {config['model']}, Parameters: {num_params:,}")
     
-    # Task 6.3: Setup optimizer and loss
+    # ==================== TASK 6.3: SETUP OPTIMIZER AND LOSS ====================
     print("\n[3/5] Setting up optimizer and loss...")
     
-    # Create optimizer with weight decay from config
+    # Create optimizer with weight decay (L2 regularization)
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=config['learning_rate'],
-        weight_decay=config.get('weight_decay', 1e-4),
-        betas=(0.9, 0.999)  # Default Adam betas
+        lr=config['learning_rate'],  # Initial learning rate (will be warmed up)
+        weight_decay=config.get('weight_decay', 1e-4),  # L2 penalty on weights
+        betas=(0.9, 0.999)  # Default Adam momentum parameters
     )
     
     # Create learning rate scheduler with cosine annealing for smoother convergence
+    # CosineAnnealingWarmRestarts: smooth decay with periodic restarts (prevents local minima)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
-        T_0=10,  # Restart every 10 epochs
-        T_mult=2,  # Double the period after each restart
-        eta_min=1e-7  # Minimum learning rate
+        T_0=10,  # Restart every 10 epochs (first cycle)
+        T_mult=2,  # Double the period after each restart (10, 20, 40, ...)
+        eta_min=1e-7  # Minimum learning rate (prevents LR from going to zero)
     )
     
-    # Create loss function
-    criterion = CombinedLoss()
+    # Create loss function (multi-objective: CE + Dice + Focal)
+    criterion = CombinedLoss()  # 30% CE + 50% Dice + 20% Focal
     
     # Initialize GradScaler for Automatic Mixed Precision (AMP)
+    # AMP: uses fp16/bf16 for speed, fp32 for stability (2× faster, 50% less VRAM)
     scaler = torch.amp.GradScaler('cuda') if config.get('use_amp', False) and torch.cuda.is_available() else None
     if scaler:
         print("✓ Using Automatic Mixed Precision (AMP) for faster training")
     
-    # Task 6.4: Training loop
+    # ==================== TASK 6.4: TRAINING LOOP ====================
     print("\n[4/5] Starting training...")
     
-    # Initialize tracking variables
-    best_miou = 0
-    train_losses = []
-    val_mious = []
-    val_pas = []
+    # Initialize tracking variables (for monitoring and checkpointing)
+    best_miou = 0  # Best validation mIoU achieved (for saving checkpoints)
+    train_losses = []  # Training loss per epoch (for plotting curves)
+    val_mious = []  # Validation mIoU per epoch
+    val_pas = []  # Validation pixel accuracy per epoch
     
-    # Early stopping
-    patience = 30
-    patience_counter = 0
+    # Early stopping configuration (prevents overfitting)
+    patience = 30  # Stop if no improvement for 30 consecutive epochs
+    patience_counter = 0  # Count epochs without improvement
     
-    # Determine if model is MiniSAM
+    # Determine if model is MiniSAM (needs different training function)
     is_minisam = (config['model'] == 'minisam')
     
     # Training loop
+    # Training loop - iterate over all epochs
     for epoch in range(config['epochs']):
         print(f"\nEpoch [{epoch+1}/{config['epochs']}]")
         
-        # Learning rate warm-up
+        # LEARNING RATE WARM-UP (first 3 epochs)
+        # Prevents early training instability by gradually increasing LR from 0
         if epoch < config.get('warmup_epochs', 0):
-            warmup_factor = (epoch + 1) / config['warmup_epochs']
+            warmup_factor = (epoch + 1) / config['warmup_epochs']  # Linear ramp: 0.33, 0.67, 1.0 for 3 epochs
             for param_group in optimizer.param_groups:
-                param_group['lr'] = config['learning_rate'] * warmup_factor
+                param_group['lr'] = config['learning_rate'] * warmup_factor  # Gradually increase to target LR
             print(f"Warm-up: LR = {optimizer.param_groups[0]['lr']:.6f}")
         
-        # Train
+        # TRAINING PHASE
+        # Choose appropriate training function based on model type
         if is_minisam:
+            # MiniSAM requires prompt sampling (50% fg + 50% bg points)
             train_loss, train_miou = train_epoch_minisam(
                 model, train_loader, optimizer, criterion, config['device'],
-                scaler=scaler
+                scaler=scaler  # AMP gradient scaler (None if AMP disabled)
             )
         else:
+            # FCN/DeepLabV3+ are fully automatic (no prompts needed)
             train_loss, train_miou = train_epoch_fcn(
                 model, train_loader, optimizer, criterion, config['device'],
                 scaler=scaler
             )
         
-        # Validate
+        # VALIDATION PHASE
+        # Evaluate on validation set without gradient computation (faster, less memory)
         val_miou, val_pa = validate(
             model, val_loader, config['device'], 
             num_classes=config['n_classes'],
-            is_minisam=is_minisam
+            is_minisam=is_minisam  # Determines if prompts are needed during validation
         )
         
-        # Update scheduler (after warm-up)
+        # LR SCHEDULER STEP (after warm-up period)
+        # CosineAnnealingWarmRestarts: smooth decay with periodic restarts
         if epoch >= config.get('warmup_epochs', 0):
-            scheduler.step()
+            scheduler.step()  # Update learning rate for next epoch
         
-        # Print metrics
-        current_lr = optimizer.param_groups[0]['lr']
+        # PRINT EPOCH SUMMARY
+        current_lr = optimizer.param_groups[0]['lr']  # Get current LR (changes each epoch)
         print(f"Train Loss: {train_loss:.4f}, Train mIoU: {train_miou:.4f}")
         print(f"Val mIoU: {val_miou:.4f}, Val PA: {val_pa:.4f}, LR: {current_lr:.6f}")
         
-        # Save tracking
-        train_losses.append(train_loss)
-        val_mious.append(val_miou)
-        val_pas.append(val_pa)
+        # TRACKING (for plotting training curves later)
+        train_losses.append(train_loss)  # Loss trajectory
+        val_mious.append(val_miou)  # Validation mIoU trajectory
+        val_pas.append(val_pa)  # Pixel accuracy trajectory
         
-        # Save best model
+        # CHECKPOINT MANAGEMENT (save best model based on validation mIoU)
         if val_miou > best_miou:
-            best_miou = val_miou
-            patience_counter = 0  # Reset counter
+            best_miou = val_miou  # Update best score
+            patience_counter = 0  # Reset early stopping counter (model is improving)
             checkpoint_path = os.path.join(script_dir, '..', '..', f'best_{config["model"]}_model.pth')
-            # Save only essential data for secure loading (weights_only=True compatible)
+            # Save only essential data for secure loading (weights_only=True compatible in PyTorch 2.6+)
             torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'best_miou': best_miou,
+                'epoch': epoch,  # Which epoch achieved this score
+                'model_state_dict': model.state_dict(),  # Model weights
+                'best_miou': best_miou,  # Best validation mIoU
             }, checkpoint_path)
             print(f"✓ Saved new best model with mIoU: {best_miou:.4f}")
             print(f"   Path: {checkpoint_path}")
         else:
-            patience_counter += 1
+            # EARLY STOPPING (prevent overfitting by stopping if no improvement)
+            patience_counter += 1  # Increment counter (no improvement this epoch)
             print(f"No improvement for {patience_counter}/{patience} epochs")
             if patience_counter >= patience:
                 print(f"\n⚠ Early stopping triggered after {epoch+1} epochs (no improvement for {patience} epochs)")
-                break
+                break  # Exit training loop early
     
     print(f"\nTraining completed! Best validation mIoU: {best_miou:.4f}")
     
-    # Task 6.5: Plot training curves
+    # ==================== TASK 6.5: PLOT TRAINING CURVES ====================
     print("\n[5/5] Plotting training curves...")
     
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))  # Create 3 subplots side-by-side
     
-    # Plot training loss
+    # SUBPLOT 1: Training Loss
+    # Shows how well the model is fitting the training data
+    # Should decrease over time (if increasing → diverging/unstable training)
     axes[0].plot(train_losses, label='Training Loss', linewidth=2)
     axes[0].set_xlabel('Epoch')
     axes[0].set_ylabel('Loss')
     axes[0].set_title('Training Loss Over Epochs')
-    axes[0].grid(True, alpha=0.3)
+    axes[0].grid(True, alpha=0.3)  # Add grid for readability
     axes[0].legend()
     
-    # Plot validation mIoU
+    # SUBPLOT 2: Validation mIoU
+    # Primary metric for segmentation quality
+    # Should increase over time and plateau (if decreasing → overfitting)
     axes[1].plot(val_mious, label='Validation mIoU', color='green', linewidth=2)
-    axes[1].axhline(y=best_miou, color='r', linestyle='--', label=f'Best mIoU: {best_miou:.4f}')
+    axes[1].axhline(y=best_miou, color='r', linestyle='--', label=f'Best mIoU: {best_miou:.4f}')  # Mark best score
     axes[1].set_xlabel('Epoch')
     axes[1].set_ylabel('mIoU')
     axes[1].set_title('Validation mIoU Over Epochs')
     axes[1].grid(True, alpha=0.3)
     axes[1].legend()
     
-    # Plot validation pixel accuracy
+    # SUBPLOT 3: Validation Pixel Accuracy
+    # Secondary metric (less informative than mIoU for segmentation)
+    # Pixel accuracy can be misleading with class imbalance (e.g., large background)
     axes[2].plot(val_pas, label='Validation Pixel Accuracy', color='orange', linewidth=2)
     axes[2].set_xlabel('Epoch')
     axes[2].set_ylabel('Pixel Accuracy')
@@ -2538,18 +2676,21 @@ def main(model_name=None):
     axes[2].grid(True, alpha=0.3)
     axes[2].legend()
     
-    plt.tight_layout()
+    plt.tight_layout()  # Adjust spacing between subplots
     plot_path = os.path.join(script_dir, '..', '..', f'training_curves_{config["model"]}.png')
-    plt.savefig(plot_path, dpi=150)
+    plt.savefig(plot_path, dpi=150)  # Save high-res version
     print(f"Saved training curves to {plot_path}")
-    plt.show()
+    plt.show()  # Display interactively (if running in GUI/notebook)
     
-    # Visualize some predictions
+    # VISUALIZE PREDICTIONS (qualitative evaluation)
+    # Shows actual predictions vs ground truth on sample images
+    # Useful for debugging and understanding failure modes
     print("\nGenerating prediction visualizations...")
     predictions_path = os.path.join(script_dir, '..', '..', f'predictions_{config["model"]}.png')
     visualize_predictions(
         model, val_loader, config['device'],
-        num_samples=4, is_minisam=is_minisam,
+        num_samples=4,  # Show 4 examples (adjustable)
+        is_minisam=is_minisam,  # Handle prompts if needed
         save_path=predictions_path
     )
     
