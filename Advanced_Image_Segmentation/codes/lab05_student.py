@@ -212,7 +212,7 @@ class FCN16s(nn.Module):
         return x
     
     def _initialize_weights(self):
-        """Initialize ConvTranspose2d layers with bilinear weights"""
+        """Initialize ConvTranspose2d and score layers with proper weights"""
         for m in self.modules():
             if isinstance(m, nn.ConvTranspose2d):
                 # Initialize with bilinear upsampling weights
@@ -220,6 +220,12 @@ class FCN16s(nn.Module):
                 in_ch, out_ch, h, w = m.weight.data.size()
                 weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
                 m.weight.data.copy_(weight)
+            elif isinstance(m, nn.Conv2d):
+                # Initialize score layers (1x1 conv) with small weights
+                if m.kernel_size == (1, 1):
+                    nn.init.xavier_uniform_(m.weight, gain=0.1)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
     
     def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
         """Generate bilinear interpolation weights"""
@@ -331,7 +337,7 @@ class FCN8s(nn.Module):
         return out
     
     def _initialize_weights(self):
-        """Initialize ConvTranspose2d layers with bilinear weights"""
+        """Initialize ConvTranspose2d and score layers with proper weights"""
         for m in self.modules():
             if isinstance(m, nn.ConvTranspose2d):
                 # Initialize with bilinear upsampling weights
@@ -339,6 +345,12 @@ class FCN8s(nn.Module):
                 in_ch, out_ch, h, w = m.weight.data.size()
                 weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
                 m.weight.data.copy_(weight)
+            elif isinstance(m, nn.Conv2d):
+                # Initialize score layers (1x1 conv) with small weights
+                if m.kernel_size == (1, 1):
+                    nn.init.xavier_uniform_(m.weight, gain=0.1)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
     
     def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
         """Generate bilinear interpolation weights"""
@@ -717,7 +729,8 @@ class MiniSAM(nn.Module):
             pos_enc = self.point_pos_embed(points)
             
             # 5. type_enc = self.point_type_embed(point_labels) - Shape: B x N x embed_dim
-            type_enc = self.point_type_embed(point_labels)
+            # Convert point_labels to Long for embedding layer
+            type_enc = self.point_type_embed(point_labels.long())
             
             # 6. point_enc = pos_enc + type_enc
             point_enc = pos_enc + type_enc
@@ -1467,7 +1480,7 @@ def main(model_name=None):
         'n_classes': 21,
         'batch_size': 32,  # RTX 3090: 8→32 (4x increase with 24GB VRAM)
         'learning_rate': 3e-4,  # Increased LR for larger batch size (linear scaling)
-        'epochs': 60,  # Increased from 30 for better convergence with augmentation
+        'epochs': 1,  # Increased from 30 for better convergence with augmentation
         'device': device,
         'image_size': 512,  # RTX 3090: 256→512 (higher resolution for better accuracy)
         'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val',
@@ -2182,7 +2195,7 @@ if __name__ == "__main__":
     
     # ==================== CONFIGURATION ====================
     # Set which operations to run
-    TRAIN_MODELS = []  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
+    TRAIN_MODELS = ['all']  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
                               # Or use 'all' to train all models sequentially
     RUN_COMPARISON = True     # Compare all trained models
     RUN_INTERACTIVE_DEMO = False  # Run Mini-SAM interactive demo
