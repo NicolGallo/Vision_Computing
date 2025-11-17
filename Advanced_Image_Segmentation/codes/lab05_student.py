@@ -1479,7 +1479,7 @@ def main(model_name=None):
         'n_classes': 21,
         'batch_size': 32,  # RTX 3090: 8→32 (4x increase with 24GB VRAM)
         'learning_rate': 3e-4,  # Increased LR for larger batch size (linear scaling)
-        'epochs': 1,  # Increased from 30 for better convergence with augmentation
+        'epochs': 100,  # Increased from 30 for better convergence with augmentation
         'device': device,
         'image_size': 512,  # RTX 3090: 256→512 (higher resolution for better accuracy)
         'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val',
