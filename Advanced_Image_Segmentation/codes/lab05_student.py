@@ -11,15 +11,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 from torchvision import transforms
+import torchvision.transforms.functional as TF
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import cv2
+import os
 from tqdm import tqdm
 import warnings
+import random
 from lab05_utils import plot_segmentation_results
-warnings.filterwarnings('ignore')
+
+# Register numpy types as safe globals for weights_only=True loading
+torch.serialization.add_safe_globals([
+    np.core.multiarray.scalar,
+    np.dtype,
+    np.ndarray,
+    np.dtypes.Float64DType,
+    np.dtypes.Float32DType,
+    np.dtypes.Int64DType,
+    np.dtypes.Int32DType,
+])
+
+#warnings.filterwarnings('ignore')
 
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -35,8 +50,8 @@ class FCN32s(nn.Module):
         super().__init__()
         
         # Task 1.1: Load pretrained ResNet50 and extract layers
-        # 1. Load models.resnet50(pretrained=True)
-        resnet = models.resnet50(pretrained=True)
+        # 1. Load models.resnet50(weights='DEFAULT')
+        resnet = models.resnet50(weights='DEFAULT')
 
         # 2. Extract conv1, bn1, relu, maxpool
         self.conv1 = resnet.conv1
@@ -58,7 +73,10 @@ class FCN32s(nn.Module):
         # 1. Create transposed convolution for 32x upsampling
         # 2. Use nn.ConvTranspose2d(n_classes, n_classes, kernel_size=64, stride=32, bias=False)
 
-        self.upscore32 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=64, stride=32, bias=False)
+        self.upscore32 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=64, stride=32, padding=16, bias=False)
+        
+        # Initialize upsampling layer with bilinear weights
+        self._initialize_weights()
         
     def forward(self, x):
         # Task 1.4: Implement forward pass
@@ -89,6 +107,31 @@ class FCN32s(nn.Module):
             x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
      
         return x
+    
+    def _initialize_weights(self):
+        """Initialize ConvTranspose2d layers with bilinear weights"""
+        for m in self.modules():
+            if isinstance(m, nn.ConvTranspose2d):
+                # Initialize with bilinear upsampling weights
+                # ConvTranspose2d weight shape: (in_channels, out_channels, kernel_h, kernel_w)
+                in_ch, out_ch, h, w = m.weight.data.size()
+                weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
+                m.weight.data.copy_(weight)
+    
+    def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
+        """Generate bilinear interpolation weights"""
+        factor = (kernel_h + 1) // 2
+        if kernel_h % 2 == 1:
+            center = factor - 1
+        else:
+            center = factor - 0.5
+        og = np.ogrid[:kernel_h, :kernel_w]
+        filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
+        weight = torch.zeros(in_channels, out_channels, kernel_h, kernel_w)
+        for i in range(in_channels):
+            for j in range(out_channels):
+                weight[i, j, :, :] = torch.from_numpy(filt)
+        return weight
 
 
 
@@ -100,7 +143,7 @@ class FCN16s(nn.Module):
         
         # Task 1.1: Load pretrained ResNet50 and extract layers
         # (Same as FCN32s)
-        resnet = models.resnet50(pretrained=True)
+        resnet = models.resnet50(weights='DEFAULT')
 
         self.conv1 = resnet.conv1
         self.bn1 = resnet.bn1
@@ -123,8 +166,11 @@ class FCN16s(nn.Module):
         # 1. upscore2: 2x upsampling with stride=2
         # 2. upscore16: 16x upsampling with stride=16
         
-        self.upscore2 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, bias=False)
-        self.upscore16 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=32, stride=16, bias=False)
+        self.upscore2 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False)
+        self.upscore16 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=32, stride=16, padding=8, bias=False)
+        
+        # Initialize upsampling layers with bilinear weights
+        self._initialize_weights()
         
     def forward(self, x):
         # Task 1.4: Implement forward pass with one skip connection
@@ -164,6 +210,31 @@ class FCN16s(nn.Module):
             x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
 
         return x
+    
+    def _initialize_weights(self):
+        """Initialize ConvTranspose2d layers with bilinear weights"""
+        for m in self.modules():
+            if isinstance(m, nn.ConvTranspose2d):
+                # Initialize with bilinear upsampling weights
+                # ConvTranspose2d weight shape: (in_channels, out_channels, kernel_h, kernel_w)
+                in_ch, out_ch, h, w = m.weight.data.size()
+                weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
+                m.weight.data.copy_(weight)
+    
+    def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
+        """Generate bilinear interpolation weights"""
+        factor = (kernel_h + 1) // 2
+        if kernel_h % 2 == 1:
+            center = factor - 1
+        else:
+            center = factor - 0.5
+        og = np.ogrid[:kernel_h, :kernel_w]
+        filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
+        weight = torch.zeros(in_channels, out_channels, kernel_h, kernel_w)
+        for i in range(in_channels):
+            for j in range(out_channels):
+                weight[i, j, :, :] = torch.from_numpy(filt)
+        return weight
 
 
 
@@ -174,14 +245,14 @@ class FCN8s(nn.Module):
         super().__init__()
         
         # Task 1.1: Load pretrained ResNet50 and extract layers
-        # 1. Load models.resnet50(pretrained=True)
+        # 1. Load models.resnet50(weights='DEFAULT')
         # 2. Extract conv1, bn1, relu, maxpool
         # 3. Extract layer1 (stride 4)
         # 4. Extract layer2 (stride 8, will be pool3)
         # 5. Extract layer3 (stride 16, will be pool4)
         # 6. Extract layer4 (stride 32)
 
-        resnet = models.resnet50(pretrained=True)
+        resnet = models.resnet50(weights='DEFAULT')
 
         self.conv1 = resnet.conv1
         self.bn1 = resnet.bn1
@@ -207,9 +278,12 @@ class FCN8s(nn.Module):
         # 3. upscore8: nn.ConvTranspose2d for 8x upsampling (8 -> 1)
         # All should have: (n_classes, n_classes, kernel_size=4 or 16, stride=2 or 8, bias=False)
         
-        self.upscore2 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, bias=False)
-        self.upscore_pool4 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, bias=False)
-        self.upscore8 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=16, stride=8, bias=False)
+        self.upscore2 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False)
+        self.upscore_pool4 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False)
+        self.upscore8 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=16, stride=8, padding=4, bias=False)
+        
+        # Initialize upsampling layers with bilinear weights
+        self._initialize_weights()
         
     def forward(self, x):
         # Task 1.4: Implement forward pass with progressive skip fusion
@@ -221,7 +295,7 @@ class FCN8s(nn.Module):
         x = self.layer1(x) # stride 4
         pool3 = self.layer2(x) # Stride 8, save for skip connection
         pool4 = self.layer3(pool3)  # Stride 16, save for skip connection
-        x = self.layer4(pool4) #Stride 32
+        x = self.layer4(pool4) # Stride 32
         
         # SCORE LAYERS:
         score_fr = self.score_fr(x)
@@ -255,6 +329,31 @@ class FCN8s(nn.Module):
             out = F.interpolate(out, size=input_size, mode='bilinear', align_corners=False)
         
         return out
+    
+    def _initialize_weights(self):
+        """Initialize ConvTranspose2d layers with bilinear weights"""
+        for m in self.modules():
+            if isinstance(m, nn.ConvTranspose2d):
+                # Initialize with bilinear upsampling weights
+                # ConvTranspose2d weight shape: (in_channels, out_channels, kernel_h, kernel_w)
+                in_ch, out_ch, h, w = m.weight.data.size()
+                weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
+                m.weight.data.copy_(weight)
+    
+    def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
+        """Generate bilinear interpolation weights"""
+        factor = (kernel_h + 1) // 2
+        if kernel_h % 2 == 1:
+            center = factor - 1
+        else:
+            center = factor - 0.5
+        og = np.ogrid[:kernel_h, :kernel_w]
+        filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
+        weight = torch.zeros(in_channels, out_channels, kernel_h, kernel_w)
+        for i in range(in_channels):
+            for j in range(out_channels):
+                weight[i, j, :, :] = torch.from_numpy(filt)
+        return weight
 
 
 
@@ -356,14 +455,14 @@ class DeepLabV3Plus(nn.Module):
         super().__init__()
         
         # Task 2.3: Load backbone and extract encoder layers
-        # 1. Load models.resnet50(pretrained=True)
+        # 1. Load models.resnet50(weights='DEFAULT')
         # 2. Extract conv1, bn1, relu, maxpool
         # 3. Extract layer1 (low-level features, stride 4)
         # 4. Extract layer2, layer3, layer4
         
         # 1. Cargar ResNet50
         if backbone == 'resnet50':
-            resnet = models.resnet50(pretrained=True)
+            resnet = models.resnet50(weights='DEFAULT')
             low_level_channels = 256  # Salida de ResNet layer1
             high_level_channels = 2048 # Salida de ResNet layer4
         else:
@@ -489,8 +588,8 @@ class MiniSAM(nn.Module):
         self.embed_dim = embed_dim
         
         # Task 3.1: Create lightweight image encoder
-        # 1. Load models.mobilenet_v3_small(pretrained=True)
-        backbone = models.mobilenet_v3_small(pretrained=True)
+        # 1. Load models.mobilenet_v3_small(weights='DEFAULT')
+        backbone = models.mobilenet_v3_small(weights='DEFAULT')
 
         # 2. Extract features: nn.Sequential(*list(backbone.features))
         #    Extraer características hasta antes de la última capa
@@ -994,7 +1093,7 @@ def compute_batch_iou(pred, target):
 
 # ================== Training Functions ==================
 
-def train_epoch_fcn(model, dataloader, optimizer, criterion, device):
+def train_epoch_fcn(model, dataloader, optimizer, criterion, device, scaler=None):
     """Train FCN/DeepLab for one epoch"""
     model.train()
     total_loss = 0
@@ -1006,22 +1105,37 @@ def train_epoch_fcn(model, dataloader, optimizer, criterion, device):
     for images, masks in tqdm(dataloader, desc='Training'):
         images, masks = images.to(device), masks.to(device)
 
-    # 3. Zero gradients: optimizer.zero_grad()
-    # 4. Forward pass: outputs = model(images)
-    # 5. Compute loss: loss = criterion(outputs, masks)
-    # 6. Backward: loss.backward()
-    # 7. Update weights: optimizer.step()
+        # 3. Zero gradients: optimizer.zero_grad()
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, masks)
-        loss.backward()
-        optimizer.step()
+        
+        # Mixed Precision Training
+        if scaler is not None:
+            with torch.amp.autocast('cuda'):
+                # 4. Forward pass: outputs = model(images)
+                outputs = model(images)
+                # 5. Compute loss: loss = criterion(outputs, masks)
+                loss = criterion(outputs, masks)
+            
+            # 6. Backward with gradient scaling
+            scaler.scale(loss).backward()
+            # 7. Update weights with unscaling
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # 4. Forward pass: outputs = model(images)
+            outputs = model(images)
+            # 5. Compute loss: loss = criterion(outputs, masks)
+            loss = criterion(outputs, masks)
+            # 6. Backward: loss.backward()
+            loss.backward()
+            # 7. Update weights: optimizer.step()
+            optimizer.step()
 
-    # 8. Calculate metrics: pred = outputs.argmax(dim=1), then miou = calculate_miou(pred, masks, num_classes)
+        # 8. Calculate metrics: pred = outputs.argmax(dim=1), then miou = calculate_miou(pred, masks, num_classes)
         pred = outputs.argmax(dim=1)
         miou, _ = calculate_miou(pred, masks, num_classes=21)
 
-    # 9. Accumulate: total_loss += loss.item(), total_miou += miou
+        # 9. Accumulate: total_loss += loss.item(), total_miou += miou
         total_loss = total_loss + loss.item()
         total_miou = total_miou + miou
 
@@ -1029,7 +1143,7 @@ def train_epoch_fcn(model, dataloader, optimizer, criterion, device):
     return total_loss / len(dataloader), total_miou / len(dataloader)
 
 
-def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_points=5):
+def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_points=5, scaler=None):
     """Train Mini-SAM for one epoch with simulated prompts"""
     model.train()
     total_loss = 0
@@ -1047,31 +1161,52 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
         # 4. Zero gradients
         optimizer.zero_grad()
         
-        # 5. Forward pass: mask_logits, iou_pred = model(images, points, point_labels)
-        mask_logits, iou_pred = model(images, points, point_labels)
-        
-        # 6. Compute losses:
-        #    - ce_loss = F.cross_entropy(mask_logits, masks)
-        ce_loss = F.cross_entropy(mask_logits, masks)
-        
-        #    - dice_loss = DiceLoss()(mask_logits, masks)
-        dice_loss = DiceLoss()(mask_logits, masks)
-        
-        #    - pred_masks = mask_logits.argmax(dim=1)
-        pred_masks = mask_logits.argmax(dim=1)
-        
-        #    - true_iou = compute_batch_iou(pred_masks, masks)
-        true_iou = compute_batch_iou(pred_masks, masks)
-        
-        #    - iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
-        iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
-        
-        # 7. Combined loss: loss = ce_loss + dice_loss + 0.1 * iou_loss
-        loss = ce_loss + dice_loss + 0.1 * iou_loss
-        
-        # 8. Backward and update
-        loss.backward()
-        optimizer.step()
+        # Mixed Precision Training
+        if scaler is not None:
+            with torch.amp.autocast('cuda'):
+                # 5. Forward pass: mask_logits, iou_pred = model(images, points, point_labels)
+                mask_logits, iou_pred = model(images, points, point_labels)
+                
+                # 6. Compute losses:
+                #    - ce_loss = F.cross_entropy(mask_logits, masks)
+                ce_loss = F.cross_entropy(mask_logits, masks)
+                
+                #    - dice_loss = DiceLoss()(mask_logits, masks)
+                dice_loss = DiceLoss()(mask_logits, masks)
+                
+                #    - pred_masks = mask_logits.argmax(dim=1)
+                pred_masks = mask_logits.argmax(dim=1)
+                
+                #    - true_iou = compute_batch_iou(pred_masks, masks)
+                true_iou = compute_batch_iou(pred_masks, masks)
+                
+                #    - iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
+                iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
+                
+                # 7. Combined loss: loss = ce_loss + dice_loss + 0.1 * iou_loss
+                loss = ce_loss + dice_loss + 0.1 * iou_loss
+            
+            # 8. Backward with gradient scaling
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # 5. Forward pass: mask_logits, iou_pred = model(images, points, point_labels)
+            mask_logits, iou_pred = model(images, points, point_labels)
+            
+            # 6. Compute losses:
+            ce_loss = F.cross_entropy(mask_logits, masks)
+            dice_loss = DiceLoss()(mask_logits, masks)
+            pred_masks = mask_logits.argmax(dim=1)
+            true_iou = compute_batch_iou(pred_masks, masks)
+            iou_loss = F.mse_loss(iou_pred.squeeze(), true_iou)
+            
+            # 7. Combined loss
+            loss = ce_loss + dice_loss + 0.1 * iou_loss
+            
+            # 8. Backward and update
+            loss.backward()
+            optimizer.step()
         
         # 9. Calculate metrics
         miou, _ = calculate_miou(pred_masks, masks, num_classes=21)
@@ -1098,11 +1233,11 @@ def validate(model, dataloader, device, num_classes=21, is_minisam=False):
         for images, masks in tqdm(dataloader, desc='Validation'):
             images, masks = images.to(device), masks.to(device)
     
-    # 4. If is_minisam:
-    #    - Sample points
-    #    - outputs, _ = model(images, points, point_labels)
-    #    Else:
-    #    - outputs = model(images)
+            # 4. If is_minisam:
+            #    - Sample points
+            #    - outputs, _ = model(images, points, point_labels)
+            #    Else:
+            #    - outputs = model(images)
 
             if is_minisam:
                 points, point_labels = sample_points_from_mask(masks, n_points=5)
@@ -1110,14 +1245,14 @@ def validate(model, dataloader, device, num_classes=21, is_minisam=False):
             else:
                 outputs = model(images)
 
-    # 5. Get predictions: pred = outputs.argmax(dim=1)
+            # 5. Get predictions: pred = outputs.argmax(dim=1)
             pred = outputs.argmax(dim=1)
 
-    # 6. Calculate metrics
+            # 6. Calculate metrics
             miou, _ = calculate_miou(pred, masks, num_classes)
             pa = calculate_pixel_accuracy(pred, masks)
 
-    # 7. Accumulate
+            # 7. Accumulate
             total_miou = total_miou + miou
             total_pa = total_pa + pa
 
@@ -1172,20 +1307,21 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
 class VOCSegmentationDataset(Dataset):
     """PASCAL VOC Segmentation Dataset"""
     
-    def __init__(self, root_dir, split='train', image_size=256, transform=None):
+    def __init__(self, root_dir, split='train', image_size=256, transform=None, use_augmentation=True):
         """
         Args:
             root_dir: Path to VOC dataset root (e.g., path/to/VOC2012_train_val/VOC2012_train_val)
             split: 'train' or 'val'
             image_size: Target image size
-            transform: Optional transforms
+            transform: Optional transforms (deprecated, use use_augmentation)
+            use_augmentation: Enable data augmentation (only for training)
         """
         import os
         
         self.root_dir = root_dir
         self.split = split
         self.image_size = image_size
-        self.transform = transform
+        self.use_augmentation = use_augmentation and (split == 'train')
         
         # Convert to absolute path
         if not os.path.isabs(root_dir):
@@ -1249,18 +1385,20 @@ class VOCSegmentationDataset(Dataset):
         image = Image.open(image_path).convert('RGB')
         mask = Image.open(mask_path)
         
-        # Convert PIL to tensor
-        image = transforms.functional.to_tensor(image)
+        # Apply data augmentation if enabled
+        if self.use_augmentation:
+            image, mask = self._apply_augmentation(image, mask)
+        else:
+            # Just resize for validation
+            image = TF.resize(image, [self.image_size, self.image_size], interpolation=Image.BILINEAR)
+            mask = TF.resize(mask, [self.image_size, self.image_size], interpolation=Image.NEAREST)
+        
+        # Convert to tensor
+        image = TF.to_tensor(image)
         mask = torch.from_numpy(np.array(mask)).long()
         
-        # Resize
-        image = transforms.functional.resize(image, (self.image_size, self.image_size))
-        mask = transforms.functional.resize(mask.unsqueeze(0), (self.image_size, self.image_size), 
-                                           interpolation=transforms.InterpolationMode.NEAREST)
-        mask = mask.squeeze(0)
-        
         # Normalize image
-        image = transforms.functional.normalize(
+        image = TF.normalize(
             image,
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
@@ -1270,22 +1408,74 @@ class VOCSegmentationDataset(Dataset):
         mask[mask == 255] = 0
         
         return image, mask
+    
+    def _apply_augmentation(self, image, mask):
+        """Apply data augmentation transforms to image and mask"""
+        
+        # 1. Random horizontal flip (50% probability)
+        if random.random() > 0.5:
+            image = TF.hflip(image)
+            mask = TF.hflip(mask)
+        
+        # 2. Random scale (0.5x to 2.0x)
+        scale = random.uniform(0.5, 2.0)
+        w, h = image.size
+        new_w, new_h = int(w * scale), int(h * scale)
+        image = TF.resize(image, [new_h, new_w], interpolation=Image.BILINEAR)
+        mask = TF.resize(mask, [new_h, new_w], interpolation=Image.NEAREST)
+        
+        # 3. Random crop to target size (with padding if needed)
+        w, h = image.size
+        if w < self.image_size or h < self.image_size:
+            # Pad if image is smaller than target
+            pad_h = max(self.image_size - h, 0)
+            pad_w = max(self.image_size - w, 0)
+            image = TF.pad(image, [0, 0, pad_w, pad_h], fill=0)
+            mask = TF.pad(mask, [0, 0, pad_w, pad_h], fill=255)
+            w, h = image.size
+        
+        # Random crop
+        i = random.randint(0, h - self.image_size)
+        j = random.randint(0, w - self.image_size)
+        image = TF.crop(image, i, j, self.image_size, self.image_size)
+        mask = TF.crop(mask, i, j, self.image_size, self.image_size)
+        
+        # 4. Color jitter (brightness, contrast, saturation)
+        if random.random() > 0.5:
+            image = TF.adjust_brightness(image, random.uniform(0.8, 1.2))
+        if random.random() > 0.5:
+            image = TF.adjust_contrast(image, random.uniform(0.8, 1.2))
+        if random.random() > 0.5:
+            image = TF.adjust_saturation(image, random.uniform(0.8, 1.2))
+        
+        # 5. Random rotation (-10° to +10°)
+        if random.random() > 0.5:
+            angle = random.uniform(-10, 10)
+            image = TF.rotate(image, angle, interpolation=Image.BILINEAR)
+            mask = TF.rotate(mask, angle, interpolation=Image.NEAREST)
+        
+        return image, mask
 
 
 # ================== Main Training Script ==================
 
-def main():
+def main(model_name=None):
     """Main training pipeline"""
     
     config = {
-        'model': 'fcn8s',  # Options: 'fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam'
+        'model': model_name or 'fcn8s',  # Options: 'fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam'
         'n_classes': 21,
-        'batch_size': 8,
-        'learning_rate': 1e-4,
-        'epochs': 30,
+        'batch_size': 32,  # RTX 3090: 8→32 (4x increase with 24GB VRAM)
+        'learning_rate': 3e-4,  # Increased LR for larger batch size (linear scaling)
+        'epochs': 60,  # Increased from 30 for better convergence with augmentation
         'device': device,
-        'image_size': 256,
-        'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val'
+        'image_size': 512,  # RTX 3090: 256→512 (higher resolution for better accuracy)
+        'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val',
+        'num_workers': 8,  # Multi-threaded data loading (adjust based on CPU cores)
+        'use_amp': True,  # Automatic Mixed Precision for faster training
+        'weight_decay': 5e-4,  # L2 regularization
+        'warmup_epochs': 3,  # Learning rate warm-up
+        'use_augmentation': True,  # Enable data augmentation for better generalization
     }
     
     print(f"Training {config['model']} for {config['epochs']} epochs")
@@ -1297,13 +1487,15 @@ def main():
     train_dataset = VOCSegmentationDataset(
         root_dir=config['data_dir'],
         split='train',
-        image_size=config['image_size']
+        image_size=config['image_size'],
+        use_augmentation=config.get('use_augmentation', True)
     )
     
     val_dataset = VOCSegmentationDataset(
         root_dir=config['data_dir'],
         split='val',
-        image_size=config['image_size']
+        image_size=config['image_size'],
+        use_augmentation=False  # No augmentation for validation
     )
     
     # Create data loaders
@@ -1311,7 +1503,7 @@ def main():
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=0,  # Set to 0 for Windows compatibility
+        num_workers=config.get('num_workers', 4),  # Parallel data loading
         pin_memory=True if torch.cuda.is_available() else False
     )
     
@@ -1319,7 +1511,7 @@ def main():
         val_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=0,
+        num_workers=config.get('num_workers', 4),
         pin_memory=True if torch.cuda.is_available() else False
     )
     
@@ -1352,24 +1544,29 @@ def main():
     # Task 6.3: Setup optimizer and loss
     print("\n[3/5] Setting up optimizer and loss...")
     
-    # Create optimizer
+    # Create optimizer with weight decay from config
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config['learning_rate'],
-        weight_decay=1e-4
+        weight_decay=config.get('weight_decay', 1e-4),
+        betas=(0.9, 0.999)  # Default Adam betas
     )
     
-    # Create learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    # Create learning rate scheduler with cosine annealing for smoother convergence
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
-        mode='max',  # Maximize mIoU
-        factor=0.5,
-        patience=5,
-        min_lr=1e-7
+        T_0=10,  # Restart every 10 epochs
+        T_mult=2,  # Double the period after each restart
+        eta_min=1e-7  # Minimum learning rate
     )
     
     # Create loss function
     criterion = CombinedLoss()
+    
+    # Initialize GradScaler for Automatic Mixed Precision (AMP)
+    scaler = torch.amp.GradScaler('cuda') if config.get('use_amp', False) and torch.cuda.is_available() else None
+    if scaler:
+        print("✓ Using Automatic Mixed Precision (AMP) for faster training")
     
     # Task 6.4: Training loop
     print("\n[4/5] Starting training...")
@@ -1380,6 +1577,10 @@ def main():
     val_mious = []
     val_pas = []
     
+    # Early stopping
+    patience = 15
+    patience_counter = 0
+    
     # Determine if model is MiniSAM
     is_minisam = (config['model'] == 'minisam')
     
@@ -1387,14 +1588,23 @@ def main():
     for epoch in range(config['epochs']):
         print(f"\nEpoch [{epoch+1}/{config['epochs']}]")
         
+        # Learning rate warm-up
+        if epoch < config.get('warmup_epochs', 0):
+            warmup_factor = (epoch + 1) / config['warmup_epochs']
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = config['learning_rate'] * warmup_factor
+            print(f"Warm-up: LR = {optimizer.param_groups[0]['lr']:.6f}")
+        
         # Train
         if is_minisam:
             train_loss, train_miou = train_epoch_minisam(
-                model, train_loader, optimizer, criterion, config['device']
+                model, train_loader, optimizer, criterion, config['device'],
+                scaler=scaler
             )
         else:
             train_loss, train_miou = train_epoch_fcn(
-                model, train_loader, optimizer, criterion, config['device']
+                model, train_loader, optimizer, criterion, config['device'],
+                scaler=scaler
             )
         
         # Validate
@@ -1404,12 +1614,14 @@ def main():
             is_minisam=is_minisam
         )
         
-        # Update scheduler
-        scheduler.step(val_miou)
+        # Update scheduler (after warm-up)
+        if epoch >= config.get('warmup_epochs', 0):
+            scheduler.step()
         
         # Print metrics
+        current_lr = optimizer.param_groups[0]['lr']
         print(f"Train Loss: {train_loss:.4f}, Train mIoU: {train_miou:.4f}")
-        print(f"Val mIoU: {val_miou:.4f}, Val PA: {val_pa:.4f}")
+        print(f"Val mIoU: {val_miou:.4f}, Val PA: {val_pa:.4f}, LR: {current_lr:.6f}")
         
         # Save tracking
         train_losses.append(train_loss)
@@ -1419,15 +1631,24 @@ def main():
         # Save best model
         if val_miou > best_miou:
             best_miou = val_miou
-            checkpoint_path = f'best_{config["model"]}_model.pth'
+            patience_counter = 0  # Reset counter
+            # Use absolute path relative to script location
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            checkpoint_path = os.path.join(script_dir, '..', '..', f'best_{config["model"]}_model.pth')
+            # Save only essential data for secure loading (weights_only=True compatible)
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
                 'best_miou': best_miou,
-                'config': config
             }, checkpoint_path)
             print(f"✓ Saved new best model with mIoU: {best_miou:.4f}")
+            print(f"   Path: {checkpoint_path}")
+        else:
+            patience_counter += 1
+            print(f"No improvement for {patience_counter}/{patience} epochs")
+            if patience_counter >= patience:
+                print(f"\n⚠ Early stopping triggered after {epoch+1} epochs (no improvement for {patience} epochs)")
+                break
     
     print(f"\nTraining completed! Best validation mIoU: {best_miou:.4f}")
     
@@ -1462,17 +1683,18 @@ def main():
     axes[2].legend()
     
     plt.tight_layout()
-    plot_path = f'training_curves_{config["model"]}.png'
+    plot_path = os.path.join(script_dir, '..', '..', f'training_curves_{config["model"]}.png')
     plt.savefig(plot_path, dpi=150)
     print(f"Saved training curves to {plot_path}")
     plt.show()
     
     # Visualize some predictions
     print("\nGenerating prediction visualizations...")
+    predictions_path = os.path.join(script_dir, '..', '..', f'predictions_{config["model"]}.png')
     visualize_predictions(
         model, val_loader, config['device'],
         num_samples=4, is_minisam=is_minisam,
-        save_path=f'predictions_{config["model"]}.png'
+        save_path=predictions_path
     )
     
     print("\n" + "="*60)
@@ -1501,10 +1723,13 @@ def compare_models():
     models_to_compare = ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
     n_classes = 21
     image_size = 256
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Create validation dataset
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    voc_path = os.path.join(script_dir, '..', '..', 'voc', 'VOC2012_train_val', 'VOC2012_train_val')
     val_dataset = VOCSegmentationDataset(
-        root_dir='../../voc/VOC2012_train_val/VOC2012_train_val',
+        root_dir=voc_path,
         split='val',
         image_size=image_size
     )
@@ -1538,13 +1763,20 @@ def compare_models():
             model = model.to(device)
             
             # Try to load trained checkpoint
-            checkpoint_path = f'best_{model_name}_model.pth'
-            try:
-                checkpoint = torch.load(checkpoint_path, map_location=device)
-                model.load_state_dict(checkpoint['model_state_dict'])
-                print(f"✓ Loaded checkpoint from {checkpoint_path}")
-            except:
-                print(f"⚠ No checkpoint found for {model_name}, using random weights")
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            checkpoint_path = os.path.join(script_dir, '..', '..', f'best_{model_name}_model.pth')
+            
+            if os.path.exists(checkpoint_path):
+                try:
+                    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                    print(f"✓ Loaded checkpoint from {checkpoint_path}")
+                except Exception as e:
+                    print(f"⚠ Error loading checkpoint: {e}")
+                    print(f"⚠ Using random weights for {model_name}")
+            else:
+                print(f"⚠ Checkpoint not found at: {checkpoint_path}")
+                print(f"⚠ Using random weights for {model_name}")
             
             # Count parameters
             num_params = sum(p.numel() for p in model.parameters())
@@ -1697,10 +1929,12 @@ def compare_models():
                 
                 # Try to load checkpoint
                 try:
-                    checkpoint = torch.load(f'best_{model_name}_model.pth', map_location=device)
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    checkpoint_path = os.path.join(script_dir, '..', '..', f'best_{model_name}_model.pth')
+                    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
                     model.load_state_dict(checkpoint['model_state_dict'])
-                except:
-                    pass
+                except Exception:
+                    pass  # Silently continue with untrained model for visualization
                 
                 model.eval()
                 
@@ -1728,8 +1962,9 @@ def compare_models():
                 axes[sample_idx, model_idx + 2].axis('off')
     
     plt.tight_layout()
-    plt.savefig('model_comparison.png', dpi=150, bbox_inches='tight')
-    print("Saved comparison to 'model_comparison.png'")
+    comparison_path = os.path.join(script_dir, '..', '..', 'model_comparison.png')
+    plt.savefig(comparison_path, dpi=150, bbox_inches='tight')
+    print(f"Saved comparison to '{comparison_path}'")
     plt.show()
     
     print("\n" + "="*80)
@@ -1747,6 +1982,9 @@ def interactive_minisam_demo():
     print("INTERACTIVE MINI-SAM DEMO")
     print("="*80)
     
+    # Define device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     # 1. Load trained Mini-SAM model
     print("\n[1/7] Loading Mini-SAM model...")
     model = MiniSAM(n_classes=21)
@@ -1754,18 +1992,22 @@ def interactive_minisam_demo():
     
     # Try to load checkpoint
     try:
-        checkpoint = torch.load('best_minisam_model.pth', map_location=device)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        checkpoint_path = os.path.join(script_dir, '..', '..', 'best_minisam_model.pth')
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("✓ Loaded trained checkpoint")
-    except:
-        print("⚠ No checkpoint found, using random weights")
+    except Exception as e:
+        print(f"⚠ Error loading checkpoint: {e}")
+        print("⚠ Using random weights")
     
     model.eval()
     
     # 2. Load test image
     print("\n[2/7] Loading test image...")
+    voc_path = os.path.join(script_dir, '..', '..', 'voc', 'VOC2012_train_val', 'VOC2012_train_val')
     val_dataset = VOCSegmentationDataset(
-        root_dir='./data',
+        root_dir=voc_path,
         split='val',
         image_size=256
     )
@@ -1900,8 +2142,9 @@ def interactive_minisam_demo():
     axes[1, 2].axis('off')
     
     plt.tight_layout()
-    plt.savefig('minisam_interactive_demo.png', dpi=150, bbox_inches='tight')
-    print("\nSaved demo visualization to 'minisam_interactive_demo.png'")
+    demo_path = os.path.join(script_dir, '..', '..', 'minisam_interactive_demo.png')
+    plt.savefig(demo_path, dpi=150, bbox_inches='tight')
+    print(f"\nSaved demo visualization to '{demo_path}'")
     plt.show()
     
     # Summary
@@ -1937,11 +2180,37 @@ if __name__ == "__main__":
     print("8. Part 5: Training and evaluation")
     print("\n" + "=" * 60)
     
-    # Uncomment to run training
-    main()
+    # ==================== CONFIGURATION ====================
+    # Set which operations to run
+    TRAIN_MODELS = []  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
+                              # Or use 'all' to train all models sequentially
+    RUN_COMPARISON = True     # Compare all trained models
+    RUN_INTERACTIVE_DEMO = False  # Run Mini-SAM interactive demo
+    # =======================================================
     
-    # Uncomment to run comparisons
-    #compare_models()
+    # Train models
+    if TRAIN_MODELS:
+        if TRAIN_MODELS == 'all' or (isinstance(TRAIN_MODELS, list) and 'all' in TRAIN_MODELS):
+            models_to_train = ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
+        else:
+            models_to_train = TRAIN_MODELS if isinstance(TRAIN_MODELS, list) else [TRAIN_MODELS]
+        
+        for idx, model_name in enumerate(models_to_train, 1):
+            print("\n" + "=" * 80)
+            print(f"TRAINING MODEL {idx}/{len(models_to_train)}: {model_name.upper()}")
+            print("=" * 80)
+            main(model_name=model_name)
     
-    # Uncomment to run interactive demo
-    # interactive_minisam_demo()
+    # Run comparisons
+    if RUN_COMPARISON:
+        print("\n" + "=" * 80)
+        print("RUNNING MODEL COMPARISON")
+        print("=" * 80)
+        compare_models()
+    
+    # Run interactive demo
+    if RUN_INTERACTIVE_DEMO:
+        print("\n" + "=" * 80)
+        print("RUNNING INTERACTIVE DEMO")
+        print("=" * 80)
+        interactive_minisam_demo()

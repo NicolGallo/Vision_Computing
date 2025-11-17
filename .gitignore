@@ -211,3 +211,7 @@ voc/
 VOC2012_test/
 VOC2012_train_val/
 best_fcn8s_model.pth
+best_deeplabv3plus_model.pth
+best_fcn16s_model.pth
+best_fcn32s_model.pth
+best_minisam_model.pth
