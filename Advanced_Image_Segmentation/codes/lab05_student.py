@@ -212,27 +212,23 @@ class FCN16s(nn.Module):
         return x
     
     def _initialize_weights(self):
-        """Initialize ConvTranspose2d and score layers with proper weights"""
-        for m in self.modules():
-            if isinstance(m, nn.ConvTranspose2d):
-                # Initialize with bilinear upsampling weights
-                # ConvTranspose2d weight shape: (in_channels, out_channels, kernel_h, kernel_w)
-                in_ch, out_ch, h, w = m.weight.data.size()
-                weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
-                m.weight.data.copy_(weight)
-            elif isinstance(m, nn.Conv2d):
-                # Initialize score layers (1x1 conv) with small weights
-                if m.kernel_size == (1, 1):
-                    nn.init.xavier_uniform_(m.weight, gain=0.1)
-                    if m.bias is not None:
-                        nn.init.constant_(m.bias, 0)
+        """Initialize upsampling and score layers (don't touch pretrained ResNet)"""
+        # Initialize upsampling layer with bilinear interpolation
+        if isinstance(self.upscore32, nn.ConvTranspose2d):
+            in_ch, out_ch, h, w = self.upscore32.weight.data.size()
+            weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
+            self.upscore32.weight.data.copy_(weight)
+        
+        # Initialize score layer with small random weights
+        nn.init.normal_(self.score_fr.weight, std=0.01)
+        if self.score_fr.bias is not None:
+            nn.init.constant_(self.score_fr.bias, 0)
     
     def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
         """Generate bilinear interpolation weights"""
         factor = (kernel_h + 1) // 2
         if kernel_h % 2 == 1:
             center = factor - 1
-        else:
             center = factor - 0.5
         og = np.ogrid[:kernel_h, :kernel_w]
         filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
@@ -338,19 +334,18 @@ class FCN8s(nn.Module):
     
     def _initialize_weights(self):
         """Initialize ConvTranspose2d and score layers with proper weights"""
-        for m in self.modules():
+        # Initialize upsampling layers with bilinear interpolation
+        for m in [self.upscore2, self.upscore_pool4, self.upscore8]:
             if isinstance(m, nn.ConvTranspose2d):
-                # Initialize with bilinear upsampling weights
-                # ConvTranspose2d weight shape: (in_channels, out_channels, kernel_h, kernel_w)
                 in_ch, out_ch, h, w = m.weight.data.size()
                 weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
                 m.weight.data.copy_(weight)
-            elif isinstance(m, nn.Conv2d):
-                # Initialize score layers (1x1 conv) with small weights
-                if m.kernel_size == (1, 1):
-                    nn.init.xavier_uniform_(m.weight, gain=0.1)
-                    if m.bias is not None:
-                        nn.init.constant_(m.bias, 0)
+        
+        # Initialize score layers with small random weights (don't touch ResNet!)
+        for m in [self.score_pool3, self.score_pool4, self.score_fr]:
+            nn.init.normal_(m.weight, std=0.01)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
     
     def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
         """Generate bilinear interpolation weights"""
@@ -1480,7 +1475,7 @@ def main(model_name=None):
         'n_classes': 21,
         'batch_size': 32,  # RTX 3090: 8→32 (4x increase with 24GB VRAM)
         'learning_rate': 3e-4,  # Increased LR for larger batch size (linear scaling)
-        'epochs': 1,  # Increased from 30 for better convergence with augmentation
+        'epochs': 10,  # Increased from 30 for better convergence with augmentation
         'device': device,
         'image_size': 512,  # RTX 3090: 256→512 (higher resolution for better accuracy)
         'data_dir': '../../voc/VOC2012_train_val/VOC2012_train_val',
@@ -2195,7 +2190,7 @@ if __name__ == "__main__":
     
     # ==================== CONFIGURATION ====================
     # Set which operations to run
-    TRAIN_MODELS = ['all']  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
+    TRAIN_MODELS = ['fcn8s']  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
                               # Or use 'all' to train all models sequentially
     RUN_COMPARISON = True     # Compare all trained models
     RUN_INTERACTIVE_DEMO = False  # Run Mini-SAM interactive demo
