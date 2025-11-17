@@ -119,7 +119,7 @@ class FCN32s(nn.Module):
                 m.weight.data.copy_(weight)
     
     def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
-        """Generate bilinear interpolation weights"""
+        """Generate bilinear interpolation weights (per-channel upsampling)"""
         factor = (kernel_h + 1) // 2
         if kernel_h % 2 == 1:
             center = factor - 1
@@ -127,10 +127,10 @@ class FCN32s(nn.Module):
             center = factor - 0.5
         og = np.ogrid[:kernel_h, :kernel_w]
         filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
+        filt = torch.from_numpy(filt).float()
         weight = torch.zeros(in_channels, out_channels, kernel_h, kernel_w)
-        for i in range(in_channels):
-            for j in range(out_channels):
-                weight[i, j, :, :] = torch.from_numpy(filt)
+        for i in range(min(in_channels, out_channels)):
+            weight[i, i, :, :] = filt
         return weight
 
 
@@ -213,29 +213,32 @@ class FCN16s(nn.Module):
     
     def _initialize_weights(self):
         """Initialize upsampling and score layers (don't touch pretrained ResNet)"""
-        # Initialize upsampling layer with bilinear interpolation
-        if isinstance(self.upscore32, nn.ConvTranspose2d):
-            in_ch, out_ch, h, w = self.upscore32.weight.data.size()
-            weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
-            self.upscore32.weight.data.copy_(weight)
+        # Initialize upsampling layers with bilinear interpolation
+        for layer in [self.upscore2, self.upscore16]:
+            if isinstance(layer, nn.ConvTranspose2d):
+                in_ch, out_ch, h, w = layer.weight.data.size()
+                weight = self._get_bilinear_filter(h, w, in_ch, out_ch)
+                layer.weight.data.copy_(weight)
         
-        # Initialize score layer with small random weights
-        nn.init.normal_(self.score_fr.weight, std=0.01)
-        if self.score_fr.bias is not None:
-            nn.init.constant_(self.score_fr.bias, 0)
+        # Initialize score layers with small random weights
+        for score_layer in [self.score_pool4, self.score_fr]:
+            nn.init.normal_(score_layer.weight, std=0.01)
+            if score_layer.bias is not None:
+                nn.init.constant_(score_layer.bias, 0)
     
     def _get_bilinear_filter(self, kernel_h, kernel_w, in_channels, out_channels):
         """Generate bilinear interpolation weights"""
         factor = (kernel_h + 1) // 2
         if kernel_h % 2 == 1:
             center = factor - 1
+        else:
             center = factor - 0.5
         og = np.ogrid[:kernel_h, :kernel_w]
         filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
+        filt = torch.from_numpy(filt).float()
         weight = torch.zeros(in_channels, out_channels, kernel_h, kernel_w)
-        for i in range(in_channels):
-            for j in range(out_channels):
-                weight[i, j, :, :] = torch.from_numpy(filt)
+        for i in range(min(in_channels, out_channels)):
+            weight[i, i, :, :] = filt
         return weight
 
 
@@ -356,10 +359,10 @@ class FCN8s(nn.Module):
             center = factor - 0.5
         og = np.ogrid[:kernel_h, :kernel_w]
         filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
+        filt = torch.from_numpy(filt).float()
         weight = torch.zeros(in_channels, out_channels, kernel_h, kernel_w)
-        for i in range(in_channels):
-            for j in range(out_channels):
-                weight[i, j, :, :] = torch.from_numpy(filt)
+        for i in range(min(in_channels, out_channels)):
+            weight[i, i, :, :] = filt
         return weight
 
 
@@ -833,6 +836,7 @@ def sample_points_from_mask(masks, n_points=5):
     # Task 3.5: Implement point sampling
     # 1. Get B, H, W = masks.shape
     B, H, W = masks.shape
+    device = masks.device
     
     # 2. Create empty lists: points_list = [], labels_list = []
     points_list = []
@@ -852,7 +856,7 @@ def sample_points_from_mask(masks, n_points=5):
         if len(fg_indices) > 0:
             #       - Randomly sample n_points//2 indices
             n_fg = n_points // 2
-            sampled_idx = torch.randint(0, len(fg_indices), (n_fg,))
+            sampled_idx = torch.randint(0, len(fg_indices), (n_fg,), device=device)
             fg_points = fg_indices[sampled_idx].float()
             
             #       - Normalize to [0,1]: divide by [H, W]
@@ -863,8 +867,8 @@ def sample_points_from_mask(masks, n_points=5):
             fg_labels = torch.ones(n_fg, dtype=torch.long, device=masks.device)
         #    6. Else: create empty tensors
         else:
-            fg_points = torch.zeros(0, 2, device=masks.device)
-            fg_labels = torch.zeros(0, dtype=torch.long, device=masks.device)
+            fg_points = torch.zeros(0, 2, device=device)
+            fg_labels = torch.zeros(0, dtype=torch.long, device=device)
         
         #    SAMPLE BACKGROUND POINTS (50%):
         #    7. bg_indices = torch.nonzero(mask == 0) - Find all background pixels
@@ -874,7 +878,7 @@ def sample_points_from_mask(masks, n_points=5):
         if len(bg_indices) > 0:
             #       - Randomly sample n_points//2 indices
             n_bg = n_points - (n_points // 2)  # Remaining points
-            sampled_idx = torch.randint(0, len(bg_indices), (n_bg,))
+            sampled_idx = torch.randint(0, len(bg_indices), (n_bg,), device=device)
             bg_points = bg_indices[sampled_idx].float()
             
             #       - Normalize to [0,1]: divide by [H, W]
@@ -885,8 +889,8 @@ def sample_points_from_mask(masks, n_points=5):
             bg_labels = torch.zeros(n_bg, dtype=torch.long, device=masks.device)
         #    9. Else: create empty tensors
         else:
-            bg_points = torch.zeros(0, 2, device=masks.device)
-            bg_labels = torch.zeros(0, dtype=torch.long, device=masks.device)
+            bg_points = torch.zeros(0, 2, device=device)
+            bg_labels = torch.zeros(0, dtype=torch.long, device=device)
         
         #    COMBINE AND PAD:
         #    10. Concatenate fg_points and bg_points
@@ -898,8 +902,8 @@ def sample_points_from_mask(masks, n_points=5):
         #    12. If total points < n_points: pad with zeros
         if len(combined_points) < n_points:
             pad_size = n_points - len(combined_points)
-            pad_points = torch.zeros(pad_size, 2, device=masks.device)
-            pad_labels = torch.zeros(pad_size, dtype=torch.long, device=masks.device)
+            pad_points = torch.zeros(pad_size, 2, device=device)
+            pad_labels = torch.zeros(pad_size, dtype=torch.long, device=device)
             combined_points = torch.cat([combined_points, pad_points], dim=0)
             combined_labels = torch.cat([combined_labels, pad_labels], dim=0)
         
@@ -1141,7 +1145,8 @@ def train_epoch_fcn(model, dataloader, optimizer, criterion, device, scaler=None
 
         # 8. Calculate metrics: pred = outputs.argmax(dim=1), then miou = calculate_miou(pred, masks, num_classes)
         pred = outputs.argmax(dim=1)
-        miou, _ = calculate_miou(pred, masks, num_classes=21)
+        num_classes = outputs.shape[1]
+        miou, _ = calculate_miou(pred, masks, num_classes=num_classes)
 
         # 9. Accumulate: total_loss += loss.item(), total_miou += miou
         total_loss = total_loss + loss.item()
@@ -1217,7 +1222,8 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
             optimizer.step()
         
         # 9. Calculate metrics
-        miou, _ = calculate_miou(pred_masks, masks, num_classes=21)
+        num_classes = mask_logits.shape[1]
+        miou, _ = calculate_miou(pred_masks, masks, num_classes=num_classes)
         
         # Accumulate
         total_loss += loss.item()
@@ -1227,7 +1233,7 @@ def train_epoch_minisam(model, dataloader, optimizer, criterion, device, n_point
     return total_loss / len(dataloader), total_miou / len(dataloader)
 
 
-def validate(model, dataloader, device, num_classes=21, is_minisam=False):
+def validate(model, dataloader, device, num_classes=None, is_minisam=False):
     """Validate the model"""
     model.eval()
     total_miou = 0
@@ -1257,7 +1263,8 @@ def validate(model, dataloader, device, num_classes=21, is_minisam=False):
             pred = outputs.argmax(dim=1)
 
             # 6. Calculate metrics
-            miou, _ = calculate_miou(pred, masks, num_classes)
+            eval_num_classes = outputs.shape[1] if num_classes is None else num_classes
+            miou, _ = calculate_miou(pred, masks, eval_num_classes)
             pa = calculate_pixel_accuracy(pred, masks)
 
             # 7. Accumulate
@@ -1285,7 +1292,7 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
             outputs, _ = model(images_batch, points, point_labels)
         else:
             outputs = model(images_batch)
-        predictions = outputs.argmax(dim=1).unsqueeze(1)  # Add channel dimension
+        predictions = outputs.argmax(dim=1)
 
         # Opcional: limitar el número de muestras para la visualización
         batch_size = images_batch.size(0)
@@ -1293,7 +1300,7 @@ def visualize_predictions(model, dataloader, device, num_samples=4, is_minisam=F
         
         # Seleccionar solo las muestras que se van a visualizar
         images_to_plot = images_batch[:num_to_plot]
-        masks_to_plot = masks_batch[:num_to_plot].unsqueeze(1)  # Add channel dimension
+        masks_to_plot = masks_batch[:num_to_plot]
         predictions_to_plot = predictions[:num_to_plot]
 
     # 4. Create figure with subplots: (num_samples, 3)
@@ -1485,6 +1492,7 @@ def main(model_name=None):
         'warmup_epochs': 3,  # Learning rate warm-up
         'use_augmentation': True,  # Enable data augmentation for better generalization
     }
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     
     print(f"Training {config['model']} for {config['epochs']} epochs")
     
@@ -1640,8 +1648,6 @@ def main(model_name=None):
         if val_miou > best_miou:
             best_miou = val_miou
             patience_counter = 0  # Reset counter
-            # Use absolute path relative to script location
-            script_dir = os.path.dirname(os.path.abspath(__file__))
             checkpoint_path = os.path.join(script_dir, '..', '..', f'best_{config["model"]}_model.pth')
             # Save only essential data for secure loading (weights_only=True compatible)
             torch.save({

@@ -178,14 +178,33 @@ def plot_segmentation_results(images, masks, predictions, title="Segmentation Re
         axes[i, 0].axis('off')
         
         # Ground truth
-        mask = masks[i, 0].cpu().numpy()
-        axes[i, 1].imshow(mask, cmap='gray')
+        mask_tensor = masks[i]
+        if mask_tensor.dim() == 3 and mask_tensor.shape[0] == 1:
+            mask_tensor = mask_tensor.squeeze(0)
+        mask_np = mask_tensor.cpu().numpy()
+        if mask_tensor.dtype.is_floating_point():
+            axes[i, 1].imshow(mask_np, cmap='gray')
+        else:
+            mask_max = float(np.nanmax(mask_np)) if mask_np.size else 1.0
+            vmax = max(1, int(mask_max))
+            axes[i, 1].imshow(mask_np, cmap='tab20', vmin=0, vmax=vmax)
         axes[i, 1].set_title('Ground Truth')
         axes[i, 1].axis('off')
         
         # Prediction
-        pred = torch.sigmoid(predictions[i, 0]).cpu().numpy()
-        axes[i, 2].imshow(pred, cmap='gray')
+        pred_tensor = predictions[i]
+        if pred_tensor.dim() == 3 and pred_tensor.shape[0] == 1:
+            pred_tensor = pred_tensor.squeeze(0)
+        if pred_tensor.dtype.is_floating_point() and pred_tensor.dim() == 3:
+            pred_tensor = torch.softmax(pred_tensor, dim=0).argmax(dim=0)
+        if pred_tensor.dtype.is_floating_point() and pred_tensor.dim() == 2:
+            pred_np = torch.sigmoid(pred_tensor).cpu().numpy()
+            axes[i, 2].imshow(pred_np, cmap='gray')
+        else:
+            pred_np = pred_tensor.cpu().numpy()
+            pred_max = float(np.nanmax(pred_np)) if pred_np.size else 1.0
+            vmax = max(1, int(pred_max))
+            axes[i, 2].imshow(pred_np, cmap='tab20', vmin=0, vmax=vmax)
         axes[i, 2].set_title('Prediction')
         axes[i, 2].axis('off')
     
