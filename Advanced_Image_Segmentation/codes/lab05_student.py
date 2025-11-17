@@ -3316,7 +3316,7 @@ if __name__ == "__main__":
     
     # ==================== CONFIGURATION ====================
     # Set which operations to run
-    TRAIN_MODELS = ['all']  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
+    TRAIN_MODELS = ['minisam']  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
                               # Or use 'all' to train all models sequentially
     RUN_COMPARISON = True     # Compare all trained models
     RUN_INTERACTIVE_DEMO = False  # Run Mini-SAM interactive demo
