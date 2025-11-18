@@ -39,6 +39,14 @@ import warnings
 import random
 from lab05_utils import plot_segmentation_results
 
+# Try to import gradio for web-based interactive demo
+try:
+    import gradio as gr
+    GRADIO_AVAILABLE = True
+except ImportError:
+    GRADIO_AVAILABLE = False
+    print("⚠ Gradio not available. Install with: pip install gradio")
+
 # Register numpy types as safe globals for weights_only=True loading
 torch.serialization.add_safe_globals([
     np.core.multiarray.scalar,
@@ -3032,30 +3040,30 @@ def compare_models():
 
 
 def interactive_minisam_demo():
-    """TRULY Interactive Mini-SAM demonstration with real-time user clicks.
+    """TRULY Interactive Mini-SAM demonstration - WEB-BASED VERSION for SSH.
     
-    This is a REAL interactive demo where you can click on the image to add prompts:
-    - Left click: Add foreground point (green star)
-    - Right click: Add background point (red X)
-    - Middle click or 'Enter': Run segmentation with current prompts
-    - Press 'r': Reset all prompts
-    - Press 'q': Quit demo
+    This demo runs in your browser (works perfectly over SSH!):
+    - Click on image to add foreground points (green stars)
+    - Select background mode to add background points (red X)
+    - See real-time segmentation updates
+    - Works on any device with a web browser
     
     Demo Workflow:
         [1/4] Load trained MiniSAM model (or use random weights)
-        [2/4] Load random test image from VOC validation set
-        [3/4] Display image and wait for user clicks
-        [4/4] Update segmentation in real-time as you add prompts
+        [2/4] Setup Gradio web interface
+        [3/4] Launch browser at http://localhost:7860
+        [4/4] Click on image to add prompts interactively
     
-    Interactive Controls:
-        - Click anywhere on the LEFT image to add prompts
-        - Watch the RIGHT side update with predictions
-        - Keep adding points to refine the segmentation
-        - Compare predicted IoU with actual results
+    Interactive Controls (in browser):
+        - Click on image: Add foreground point (default)
+        - Toggle "Background Mode": Switch to background points
+        - "Reset Points" button: Clear all prompts
+        - "New Image" button: Load different test image
+        - See IoU score update in real-time
     
-    Visualization Layout:
-        Left: Input image with your prompts overlaid
-        Right: Current segmentation prediction + IoU score
+    Visualization:
+        - Left: Input image with your click prompts overlaid
+        - Right: Current segmentation prediction + IoU score
     
     Expected Behavior:
         - More prompts → better segmentation (higher IoU)
@@ -3063,26 +3071,44 @@ def interactive_minisam_demo():
         - You can iteratively refine until satisfied
     
     Returns:
-        points_history (list): All points clicked during session
-        pred_masks (list): Predictions after each update
+        None (runs web server until manually stopped with Ctrl+C)
     
     Use Cases:
         - Interactive annotation tool prototype
+        - Works over SSH (no X11 forwarding needed!)
         - Understanding prompt-based segmentation
         - Demonstrating SAM-style models to stakeholders
         - Quick annotation for few-shot learning
     
+    Requirements:
+        - pip install gradio
+        - Internet access for first-time Gradio setup
+    
     Tips:
         - Start with 1-2 foreground clicks on the object
+        - Toggle background mode to add negative prompts
         - Add background clicks if model includes too much
-        - Use right-click corrections to fix errors
-        - Press Enter to see final result with current prompts
+        - Click "Reset Points" to start over
+        - Access from any device on your network using the public URL
     """
-    # Task 7.2: Create TRULY interactive demo
+    # Task 7.2: Create TRULY interactive demo - WEB VERSION
+    
+    if not GRADIO_AVAILABLE:
+        print("="*80)
+        print("ERROR: Gradio not installed!")
+        print("="*80)
+        print("\nTo use the interactive demo over SSH, install Gradio:")
+        print("  pip install gradio")
+        print("\nThen run this script again.")
+        print("="*80)
+        return
     
     print("="*80)
-    print("INTERACTIVE MINI-SAM DEMO (REAL-TIME)")
+    print("INTERACTIVE MINI-SAM DEMO (WEB-BASED)")
     print("="*80)
+    print("\n✓ This demo runs in your browser - perfect for SSH!")
+    print("✓ No X11 forwarding needed")
+    print("✓ Access from any device on your network\n")
     
     # Define device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -3129,58 +3155,53 @@ def interactive_minisam_demo():
     img_display = img_display + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     img_display = torch.clamp(img_display, 0, 1).permute(1, 2, 0).numpy()
     
-    # 3. Setup interactive visualization
-    print("\n[3/4] Setting up interactive interface...")
-    print("\n" + "="*80)
-    print("CONTROLS:")
-    print("  - LEFT CLICK: Add foreground point (green star)")
-    print("  - RIGHT CLICK: Add background point (red X)")
-    print("  - MIDDLE CLICK or ENTER: Run segmentation")
-    print("  - Press 'r': Reset all points")
-    print("  - Press 'c': Clear last point")
-    print("  - Press 's': Save current result")
-    print("  - Press 'q' or close window: Quit")
-    print("="*80 + "\n")
+    # 3. Setup Gradio web interface
+    print("\n[3/4] Setting up web interface...")
     
-    # Storage for user prompts
-    class InteractiveState:
+    # Storage for current session state
+    class SessionState:
         def __init__(self):
-            self.fg_points = []  # List of (y, x) normalized coordinates
+            self.current_image = img_display.copy()
+            self.current_tensor = image_tensor.clone()
+            self.gt_mask = gt_mask.cpu().numpy()
+            self.fg_points = []
             self.bg_points = []
-            self.pred_mask = None
-            self.iou_pred = None
-            self.history = []  # Track all predictions
+            self.image_idx = idx
     
-    state = InteractiveState()
+    session = SessionState()
     
-    # Create figure with two subplots
-    fig, (ax_input, ax_output) = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle('Interactive Mini-SAM Demo - Click to add prompts!', fontsize=14, fontweight='bold')
-    
-    # Left: Input image with prompts
-    ax_input.imshow(img_display)
-    ax_input.set_title('Input Image + Your Prompts\n(Click here to add points)', fontsize=12)
-    ax_input.axis('off')
-    
-    # Right: Prediction output
-    ax_output.imshow(img_display)
-    ax_output.set_title('Prediction (waiting for prompts...)', fontsize=12)
-    ax_output.axis('off')
-    
-    plt.tight_layout()
-    
-    def run_segmentation():
-        """Run model with current prompts and update display."""
-        if len(state.fg_points) == 0 and len(state.bg_points) == 0:
-            print("⚠ No prompts yet. Click on the image first!")
-            return
+    def process_click(image, bg_mode, evt: gr.SelectData):
+        """Process user click on image."""
+        # Get click coordinates (Gradio returns pixel coordinates)
+        x, y = evt.index  # (width, height)
         
-        # Combine foreground and background points
-        all_points = state.fg_points + state.bg_points
-        all_labels = [1] * len(state.fg_points) + [0] * len(state.bg_points)
+        # Normalize to [0, 1]
+        h, w = image.shape[:2]
+        x_norm = x / w
+        y_norm = y / h
         
-        if len(all_points) == 0:
-            return
+        # Add to appropriate list
+        if bg_mode:
+            session.bg_points.append([y_norm, x_norm])
+            label_type = "BACKGROUND"
+        else:
+            session.fg_points.append([y_norm, x_norm])
+            label_type = "FOREGROUND"
+        
+        print(f"→ Added {label_type} point at ({y_norm:.3f}, {x_norm:.3f})")
+        
+        # Run segmentation if we have points
+        return run_segmentation_web()
+    
+    def run_segmentation_web():
+        """Run segmentation with current prompts and return visualization."""
+        if len(session.fg_points) == 0 and len(session.bg_points) == 0:
+            # No points yet - just show input image
+            return session.current_image.astype(np.uint8), "Click on the image to add prompts!", None
+        
+        # Combine all points
+        all_points = session.fg_points + session.bg_points
+        all_labels = [1] * len(session.fg_points) + [0] * len(session.bg_points)
         
         # Convert to tensors
         points_tensor = torch.tensor(all_points, dtype=torch.float32).unsqueeze(0).to(device)
@@ -3188,195 +3209,183 @@ def interactive_minisam_demo():
         
         # Run model
         with torch.no_grad():
-            mask_logits, iou_pred = model(image_tensor, points_tensor, labels_tensor)
-            pred_mask = mask_logits.argmax(dim=1)[0].cpu().numpy()
-        
-        state.pred_mask = pred_mask
-        state.iou_pred = iou_pred.item()
-        state.history.append((len(all_points), state.iou_pred))
-        
-        # Update output display
-        ax_output.clear()
-        ax_output.imshow(pred_mask, cmap='tab20', vmin=0, vmax=20)
-        ax_output.set_title(f'Prediction ({len(all_points)} points) | IoU: {state.iou_pred:.3f}', 
-                           fontsize=12, fontweight='bold')
-        ax_output.axis('off')
-        
-        print(f"✓ Segmentation updated: {len(state.fg_points)} fg + {len(state.bg_points)} bg points, IoU: {state.iou_pred:.3f}")
-        
-        fig.canvas.draw()
-    
-    def update_input_display():
-        """Redraw input image with current prompts."""
-        ax_input.clear()
-        ax_input.imshow(img_display)
-        
-        # Plot foreground points
-        if state.fg_points:
-            fg_arr = np.array(state.fg_points)
-            ax_input.scatter(fg_arr[:, 1] * 256, fg_arr[:, 0] * 256,
-                           c='lime', s=300, marker='*', edgecolors='white', linewidths=2,
-                           label=f'Foreground ({len(state.fg_points)})', zorder=10)
-        
-        # Plot background points
-        if state.bg_points:
-            bg_arr = np.array(state.bg_points)
-            ax_input.scatter(bg_arr[:, 1] * 256, bg_arr[:, 0] * 256,
-                           c='red', s=200, marker='x', linewidths=3,
-                           label=f'Background ({len(state.bg_points)})', zorder=10)
-        
-        total_points = len(state.fg_points) + len(state.bg_points)
-        ax_input.set_title(f'Input Image + Your Prompts ({total_points} total)\n(Click to add more)', 
-                          fontsize=12)
-        ax_input.axis('off')
-        if state.fg_points or state.bg_points:
-            ax_input.legend(loc='upper right', fontsize=10)
-        
-        fig.canvas.draw()
-    
-    def on_click(event):
-        """Handle mouse clicks on the image."""
-        # Only process clicks on the input axes
-        if event.inaxes != ax_input:
-            return
-        
-        if event.xdata is None or event.ydata is None:
-            return
-        
-        # Normalize coordinates to [0, 1]
-        x_norm = event.xdata / 256
-        y_norm = event.ydata / 256
-        
-        # Clamp to valid range
-        x_norm = np.clip(x_norm, 0, 1)
-        y_norm = np.clip(y_norm, 0, 1)
-        
-        # Left click: foreground
-        if event.button == 1:
-            state.fg_points.append([y_norm, x_norm])
-            print(f"→ Added FOREGROUND point at ({y_norm:.2f}, {x_norm:.2f})")
-            update_input_display()
-            run_segmentation()  # Auto-update
-        
-        # Right click: background
-        elif event.button == 3:
-            state.bg_points.append([y_norm, x_norm])
-            print(f"→ Added BACKGROUND point at ({y_norm:.2f}, {x_norm:.2f})")
-            update_input_display()
-            run_segmentation()  # Auto-update
-        
-        # Middle click: just run segmentation
-        elif event.button == 2:
-            run_segmentation()
-    
-    def on_key(event):
-        """Handle keyboard shortcuts."""
-        if event.key == 'r':
-            # Reset all points
-            state.fg_points.clear()
-            state.bg_points.clear()
-            state.pred_mask = None
-            state.iou_pred = None
-            print("\n🔄 Reset all points")
+            mask_logits, iou_pred = model(session.current_tensor, points_tensor, labels_tensor)
             
-            update_input_display()
-            ax_output.clear()
-            ax_output.imshow(img_display)
-            ax_output.set_title('Prediction (waiting for prompts...)', fontsize=12)
-            ax_output.axis('off')
-            fig.canvas.draw()
+            # Get the most likely class for each pixel
+            pred_classes = mask_logits.argmax(dim=1)[0].cpu().numpy()  # (H, W)
+            
+            # Create binary mask: any non-background class is foreground
+            binary_mask = (pred_classes > 0).astype(np.uint8)
+            
+            # Debug: print prediction stats
+            unique_classes = np.unique(pred_classes)
+            fg_pixels = binary_mask.sum()
+            total_pixels = binary_mask.size
+            print(f"  Predicted classes: {unique_classes.tolist()}")
+            print(f"  Foreground pixels: {fg_pixels}/{total_pixels} ({100*fg_pixels/total_pixels:.1f}%)")
+            print(f"  Logits range: [{mask_logits.min().item():.2f}, {mask_logits.max().item():.2f}]")
         
-        elif event.key == 'c':
-            # Clear last point
-            if state.fg_points:
-                removed = state.fg_points.pop()
-                print(f"⌫ Removed last foreground point: {removed}")
-                update_input_display()
-                run_segmentation()
-            elif state.bg_points:
-                removed = state.bg_points.pop()
-                print(f"⌫ Removed last background point: {removed}")
-                update_input_display()
-                run_segmentation()
-            else:
-                print("⚠ No points to remove")
+        # VOC class names
+        class_names = ['background', 'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 
+                      'bus', 'car', 'cat', 'chair', 'cow', 'diningtable', 'dog', 
+                      'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 
+                      'sofa', 'train', 'tvmonitor']
         
-        elif event.key == 's':
-            # Save current result
-            if state.pred_mask is not None:
-                save_path = os.path.join(script_dir, '..', '..', 
-                                        f'minisam_interactive_result_{len(state.fg_points)}fg_{len(state.bg_points)}bg.png')
-                
-                # Create summary figure
-                save_fig, save_axes = plt.subplots(1, 3, figsize=(15, 5))
-                
-                # Input with prompts
-                save_axes[0].imshow(img_display)
-                if state.fg_points:
-                    fg_arr = np.array(state.fg_points)
-                    save_axes[0].scatter(fg_arr[:, 1] * 256, fg_arr[:, 0] * 256,
-                                       c='lime', s=300, marker='*', edgecolors='white', linewidths=2)
-                if state.bg_points:
-                    bg_arr = np.array(state.bg_points)
-                    save_axes[0].scatter(bg_arr[:, 1] * 256, bg_arr[:, 0] * 256,
-                                       c='red', s=200, marker='x', linewidths=3)
-                save_axes[0].set_title(f'Input + Prompts ({len(state.fg_points)+len(state.bg_points)} points)')
-                save_axes[0].axis('off')
-                
-                # Ground truth
-                save_axes[1].imshow(gt_mask.cpu().numpy(), cmap='tab20', vmin=0, vmax=20)
-                save_axes[1].set_title('Ground Truth')
-                save_axes[1].axis('off')
-                
-                # Prediction
-                save_axes[2].imshow(state.pred_mask, cmap='tab20', vmin=0, vmax=20)
-                save_axes[2].set_title(f'Prediction (IoU: {state.iou_pred:.3f})')
-                save_axes[2].axis('off')
-                
-                plt.tight_layout()
-                save_fig.savefig(save_path, dpi=150, bbox_inches='tight')
-                plt.close(save_fig)
-                print(f"💾 Saved result to: {save_path}")
-            else:
-                print("⚠ No prediction to save yet")
+        # Get predicted class name (most common non-background class)
+        fg_classes = pred_classes[pred_classes > 0]
+        if len(fg_classes) > 0:
+            most_common_class = np.bincount(fg_classes).argmax()
+            class_name = class_names[most_common_class]
+        else:
+            class_name = "background"
         
-        elif event.key == 'q':
-            # Quit
-            plt.close(fig)
-            print("\n👋 Closing demo...")
+        # Create visualization with prompts
+        vis_image = session.current_image.copy().astype(np.uint8)
         
-        elif event.key == 'enter':
-            # Manual segmentation trigger
-            run_segmentation()
+        # Draw foreground points (bright green circles with white border)
+        if session.fg_points:
+            for pt in session.fg_points:
+                y_px = int(pt[0] * vis_image.shape[0])
+                x_px = int(pt[1] * vis_image.shape[1])
+                # Draw white outer circle
+                for dy in range(-7, 8):
+                    for dx in range(-7, 8):
+                        if 0 <= y_px+dy < vis_image.shape[0] and 0 <= x_px+dx < vis_image.shape[1]:
+                            if (dy*dy + dx*dx) <= 49:  # radius 7
+                                vis_image[y_px+dy, x_px+dx] = [255, 255, 255]
+                # Draw green inner circle
+                for dy in range(-5, 6):
+                    for dx in range(-5, 6):
+                        if 0 <= y_px+dy < vis_image.shape[0] and 0 <= x_px+dx < vis_image.shape[1]:
+                            if (dy*dy + dx*dx) <= 25:  # radius 5
+                                vis_image[y_px+dy, x_px+dx] = [0, 255, 0]
+        
+        # Draw background points (red X with thicker lines)
+        if session.bg_points:
+            for pt in session.bg_points:
+                y_px = int(pt[0] * vis_image.shape[0])
+                x_px = int(pt[1] * vis_image.shape[1])
+                # Draw thick X
+                for i in range(-8, 9):
+                    for thickness in range(-2, 3):
+                        # Diagonal \  
+                        if 0 <= y_px+i < vis_image.shape[0] and 0 <= x_px+i+thickness < vis_image.shape[1]:
+                            vis_image[y_px+i, x_px+i+thickness] = [255, 0, 0]
+                        # Diagonal /
+                        if 0 <= y_px+i < vis_image.shape[0] and 0 <= x_px-i+thickness < vis_image.shape[1]:
+                            vis_image[y_px+i, x_px-i+thickness] = [255, 0, 0]
+        
+        # Create prediction visualization (binary mask overlay)
+        pred_vis = session.current_image.copy().astype(np.uint8)
+        
+        # Create semi-transparent overlay: green for foreground, keep background as-is
+        overlay = pred_vis.copy()
+        overlay[binary_mask == 1] = [0, 255, 0]  # Bright green for predicted foreground
+        
+        # Blend: 60% overlay + 40% original image
+        alpha = 0.6
+        pred_vis = (alpha * overlay + (1 - alpha) * pred_vis).astype(np.uint8)
+        
+        # Add contour for better visibility
+        try:
+            import cv2
+            contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(pred_vis, contours, -1, (255, 255, 0), 2)  # Yellow contour
+        except:
+            pass  # Skip if cv2 not available
+        
+        # Status message
+        total_pts = len(all_points)
+        status = f"✓ Segmentation: {len(session.fg_points)} FG + {len(session.bg_points)} BG points | Class: {class_name} | IoU: {iou_pred.item():.3f}"
+        
+        print(f"✓ Updated: {total_pts} points, Class: {class_name}, IoU = {iou_pred.item():.3f}")
+        
+        return vis_image.astype(np.uint8), status, pred_vis.astype(np.uint8)
     
-    # Connect event handlers
-    fig.canvas.mpl_connect('button_press_event', on_click)
-    fig.canvas.mpl_connect('key_press_event', on_key)
+    def reset_points():
+        """Clear all prompts."""
+        session.fg_points.clear()
+        session.bg_points.clear()
+        print("🔄 Reset all points")
+        return session.current_image.astype(np.uint8), "Points reset. Click on image to add new prompts.", None
     
-    print("\n[4/4] Interactive mode ready! Start clicking on the LEFT image.")
-    print("      (Segmentation updates automatically after each click)\n")
+    def load_new_image():
+        """Load a different test image."""
+        new_idx = np.random.randint(0, len(val_dataset))
+        new_image, new_gt = val_dataset[new_idx]
+        
+        # Update session state
+        session.current_tensor = new_image.unsqueeze(0).to(device)
+        session.gt_mask = new_gt.cpu().numpy()
+        session.image_idx = new_idx
+        
+        # Denormalize for display
+        img_disp = new_image.cpu()
+        img_disp = img_disp * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        img_disp = img_disp + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        img_disp = torch.clamp(img_disp, 0, 1).permute(1, 2, 0).numpy()
+        img_disp = (img_disp * 255).astype(np.uint8)
+        
+        session.current_image = img_disp
+        session.fg_points.clear()
+        session.bg_points.clear()
+        
+        print(f"📷 Loaded new test image: {new_idx}")
+        return img_disp.astype(np.uint8), f"New image loaded (ID: {new_idx}). Click to add prompts.", None
     
-    # Show the interactive window
-    plt.show()
+    # Convert current image to uint8
+    img_display_uint8 = (img_display * 255).astype(np.uint8)
+    session.current_image = img_display_uint8
     
-    # Summary after closing
+    # Create Gradio interface
+    with gr.Blocks(title="Interactive Mini-SAM Demo") as demo:
+        gr.Markdown("# 🎯 Interactive Mini-SAM Demo")
+        gr.Markdown("Click on the image to add prompts. Toggle background mode for negative prompts.")
+        
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("### Input Image (Click to add prompts)")
+                input_image = gr.Image(value=img_display_uint8, label="Click here!", type="numpy")
+                with gr.Row():
+                    bg_mode = gr.Checkbox(label="Background Mode (red X)", value=False)
+                    reset_btn = gr.Button("🔄 Reset Points")
+                    new_img_btn = gr.Button("🎲 New Image")
+            
+            with gr.Column():
+                gr.Markdown("### Segmentation Result")
+                output_image = gr.Image(label="Prediction", type="numpy")
+                status = gr.Textbox(label="Status", value="Click on the left image to start!")
+        
+        # Event handlers
+        input_image.select(
+            fn=process_click,
+            inputs=[input_image, bg_mode],
+            outputs=[input_image, status, output_image]
+        )
+        
+        reset_btn.click(
+            fn=reset_points,
+            outputs=[input_image, status, output_image]
+        )
+        
+        new_img_btn.click(
+            fn=load_new_image,
+            outputs=[input_image, status, output_image]
+        )
+    
+    print("\n[4/4] Launching web interface...")
     print("\n" + "="*80)
-    print("SESSION SUMMARY")
-    print("="*80)
-    print(f"Total points added: {len(state.fg_points)} foreground + {len(state.bg_points)} background")
-    if state.history:
-        print(f"\nSegmentation history ({len(state.history)} updates):")
-        for i, (num_points, iou) in enumerate(state.history, 1):
-            print(f"  Update {i}: {num_points} points → IoU = {iou:.3f}")
-        
-        if len(state.history) > 1:
-            improvement = state.history[-1][1] - state.history[0][1]
-            print(f"\nTotal IoU improvement: {improvement:+.3f}")
-    else:
-        print("No segmentations were performed.")
-    print("="*80)
+    print("WEB INTERFACE CONTROLS:")
+    print("  - Click on LEFT image: Add foreground point (default)")
+    print("  - Check 'Background Mode': Switch to background points")
+    print("  - Reset Points: Clear all prompts")
+    print("  - New Image: Load different test image")
+    print("="*80 + "\n")
     
-    return state.fg_points, state.bg_points, state.history
+    # Launch with share=True to get public URL (works over SSH!)
+    demo.launch(share=True, server_name="0.0.0.0", server_port=7860)
+    
+    print("\n👋 Demo closed.")
 
 
 if __name__ == "__main__":
