@@ -39,6 +39,45 @@ import warnings
 import random
 from lab05_utils import plot_segmentation_results
 
+
+# =============================== 
+# GLOBAL SEED FOR FULL REPRODUCIBILITY
+# ===============================
+
+SEED = 69415  # el seed que tú quieras (69415 es perfecto)
+
+# --- Python & NumPy ---
+random.seed(SEED)
+np.random.seed(SEED)
+
+# --- PyTorch (CPU & GPU) ---
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)  # múltiple GPUs (por si acaso)
+
+# --- CUDNN determinism ---
+# ⚠ Estos dos aseguran reproducibilidad BIT-A-BIT en GPU.
+# ⚠ benchmark=False es necesario: si está True, PyTorch selecciona
+#    diferentes algoritmos no deterministas en cada run.
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+# --- Dataloader reproducible (más importante de lo que parece) ---
+def worker_init_fn(worker_id):
+    """
+    Cada worker recibe un seed distinto pero reproducible,
+    derivado del seed global.
+    """
+    worker_seed = SEED + worker_id
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+g = torch.Generator()
+g.manual_seed(SEED)
+
+
+
+
 # Register numpy types as safe globals for weights_only=True loading
 torch.serialization.add_safe_globals([
     np.core.multiarray.scalar,
@@ -58,6 +97,131 @@ print(f"Using device: {device}")
 
 
 # ================== Part 1: FCN Architecture ==================
+
+
+
+class KCCSContextBlock(nn.Module):
+    """
+    Bloque de contexto KCCS para mapas de características 2D (B, C, H, W).
+
+    Divide el espacio de características en tres subespacios:
+        - S: semántico
+        - E: episódico
+        - I: intencional
+
+    Entre ellos aplica proyecciones 1x1 y afinidades tipo kernel gaussiano
+    por píxel, de forma muy parecida a la versión de GridWorld pero aquí
+    vectorizada en H×W.
+
+    Entrada / salida:
+        x:  [B, C, H, W]  (C = in_channels)
+        y:  [B, C, H, W]  (mismo shape, con residual: y = x + f_KCCS(x))
+    """
+    def __init__(self, in_channels, s_dim=64, e_dim=64, i_dim=64, sigma_min=0.5):
+        super().__init__()
+        self.s_dim = s_dim
+        self.e_dim = e_dim
+        self.i_dim = i_dim
+        self.sigma_min = sigma_min
+
+        # Proyección inicial a subespacios S, E, I (1x1 conv)
+        self.to_S = nn.Conv2d(in_channels, s_dim, kernel_size=1, bias=False)
+        self.to_E = nn.Conv2d(in_channels, e_dim, kernel_size=1, bias=False)
+        self.to_I = nn.Conv2d(in_channels, i_dim, kernel_size=1, bias=False)
+
+        # Proyecciones entre subespacios (por canal, compartidas en HxW)
+        self.W_e_to_s = nn.Conv2d(e_dim, s_dim, kernel_size=1, bias=False)
+        self.W_i_to_s = nn.Conv2d(i_dim, s_dim, kernel_size=1, bias=False)
+
+        self.W_s_to_e = nn.Conv2d(s_dim, e_dim, kernel_size=1, bias=False)
+        self.W_i_to_e = nn.Conv2d(i_dim, e_dim, kernel_size=1, bias=False)
+
+        self.W_s_to_i = nn.Conv2d(s_dim, i_dim, kernel_size=1, bias=False)
+        self.W_e_to_i = nn.Conv2d(e_dim, i_dim, kernel_size=1, bias=False)
+
+        # Sigmas (anchura del kernel) aprendibles, como en GridWorld
+        self.rho_s_e = nn.Parameter(torch.tensor(0.0))
+        self.rho_s_i = nn.Parameter(torch.tensor(0.0))
+        self.rho_e_i = nn.Parameter(torch.tensor(0.0))
+
+        # Proyección de vuelta a canales originales + residual
+        self.out_proj = nn.Conv2d(s_dim + e_dim + i_dim, in_channels, kernel_size=1)
+
+    def _sigma(self, rho):
+        # Evita sigma <= 0
+        return F.softplus(rho) + self.sigma_min
+
+    def _gauss_aff(self, a, b, sigma):
+        """
+        Kernel gaussiano por píxel:
+            a, b: [B, C, H, W]
+            sigma: escalar
+        Devuelve affinities: [B, 1, H, W]
+        """
+        diff = a - b
+        dist2 = torch.sum(diff * diff, dim=1, keepdim=True)  # suma en canales
+        return torch.exp(-dist2 / (sigma * sigma + 1e-8))
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        # Proyección a subespacios
+        S_prev = self.to_S(x)  # [B, s_dim, H, W]
+        E_prev = self.to_E(x)  # [B, e_dim, H, W]
+        I_prev = self.to_I(x)  # [B, i_dim, H, W]
+
+        # Proyecciones entre subespacios
+        S_from_E = self.W_e_to_s(E_prev)
+        S_from_I = self.W_i_to_s(I_prev)
+
+        E_from_S = self.W_s_to_e(S_prev)
+        E_from_I = self.W_i_to_e(I_prev)
+
+        I_from_S = self.W_s_to_i(S_prev)
+        I_from_E = self.W_e_to_i(E_prev)
+
+        # Sigmas
+        sigma_s_e = self._sigma(self.rho_s_e)
+        sigma_s_i = self._sigma(self.rho_s_i)
+        sigma_e_i = self._sigma(self.rho_e_i)
+
+        # Afinidades gaussianas (por píxel)
+        aff_ES = self._gauss_aff(S_prev, S_from_E, sigma_s_e)
+        aff_IS = self._gauss_aff(S_prev, S_from_I, sigma_s_i)
+
+        aff_SE = self._gauss_aff(E_prev, E_from_S, sigma_s_e)
+        aff_IE = self._gauss_aff(E_prev, E_from_I, sigma_e_i)
+
+        aff_SI = self._gauss_aff(I_prev, I_from_S, sigma_s_i)
+        aff_EI = self._gauss_aff(I_prev, I_from_E, sigma_e_i)
+
+        # Actualizaciones tipo GridWorld pero en 2D
+        S_new = torch.tanh(
+            S_prev
+            + aff_ES * self.W_e_to_s(E_prev)
+            + aff_IS * self.W_i_to_s(I_prev)
+        )
+
+        E_new = torch.tanh(
+            E_prev
+            + aff_SE * self.W_s_to_e(S_prev)
+            + aff_IE * self.W_i_to_e(I_prev)
+        )
+
+        I_new = torch.tanh(
+            I_prev
+            + aff_SI * self.W_s_to_i(S_prev)
+            + aff_EI * self.W_e_to_i(E_prev)
+        )
+
+        # Fusionar subespacios y proyectar de vuelta
+        out = torch.cat([S_new, E_new, I_new], dim=1)  # [B, s+e+i, H, W]
+        out = self.out_proj(out)                       # [B, C, H, W]
+
+        # Residual: no rompemos el backbone
+        return x + out
+
+
+
 
 class FCN32s(nn.Module):
     """Fully Convolutional Network without skip connections (baseline).
@@ -508,6 +672,101 @@ class FCN8s(nn.Module):
         for i in range(min(in_channels, out_channels)):
             weight[i, i, :, :] = filt
         return weight
+    
+
+
+class FCN8sKCCS(FCN8s):
+    """
+    FCN-8s + bloque de contexto KCCS en el mapa de características más profundo (layer4).
+
+    Igual que tu FCN8s:
+        - Mismo backbone ResNet50
+        - Mismos skips pool3/pool4
+        - Mismos upsampling y score layers
+
+    Única diferencia:
+        - Antes de aplicar score_fr, pasamos x por un bloque KCCSContextBlock
+          que implementa la interacción S/E/I con kernels gaussianos.
+    """
+    def __init__(self, n_classes=21, kccs_dims=(64, 64, 64)):
+        super().__init__(n_classes=n_classes)
+        s_dim, e_dim, i_dim = kccs_dims
+
+        # Mapa profundo de ResNet50 layer4 tiene 2048 canales
+        self.kccs_block = KCCSContextBlock(
+            in_channels=2048,
+            s_dim=s_dim,
+            e_dim=e_dim,
+            i_dim=i_dim
+        )
+
+    def forward(self, x):
+        # Calc input size para el upsampling final
+        input_size = x.shape[2:]
+
+        # ENCODER (igual que FCN8s)
+        x = self.relu(self.bn1(self.conv1(x)))  # Stride 2
+        x = self.maxpool(x)                    # Stride 4
+        x = self.layer1(x)                     # Stride 4 (256 canales)
+
+        # SKIP 1: pool3 (layer2 output) - FINE DETAILS
+        pool3 = self.layer2(x)                 # Stride 8 (512 canales)
+
+        # SKIP 2: pool4 (layer3 output) - MID-LEVEL
+        pool4 = self.layer3(pool3)             # Stride 16 (1024 canales)
+
+        # Deepest layer - HIGH-LEVEL SEMANTICS
+        x = self.layer4(pool4)                 # Stride 32 (2048 canales)
+
+        # 🔵 AQUÍ entra KCCS: razonamiento S/E/I sobre el mapa profundo
+        x = self.kccs_block(x)                 # Mantiene shape: [B, 2048, H/32, W/32]
+
+        # SCORE LAYERS (igual que FCN8s)
+        score_fr = self.score_fr(x)            # Deep: stride 32
+        score_pool4 = self.score_pool4(pool4)  # Mid: stride 16
+        score_pool3 = self.score_pool3(pool3)  # Shallow: stride 8
+
+        # PROGRESSIVE UPSAMPLING (igual que FCN8s)
+
+        # 1) Fusion profunda: 32 → 16 + pool4
+        upscore2 = self.upscore2(score_fr)     # Upsample 32 → 16
+
+        if upscore2.shape != score_pool4.shape:
+            upscore2 = F.interpolate(
+                upscore2,
+                size=score_pool4.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+
+        fuse_pool4 = upscore2 + score_pool4
+
+        # 2) Fusion media: 16 → 8 + pool3
+        upscore_pool4 = self.upscore_pool4(fuse_pool4)  # 16 → 8
+
+        if upscore_pool4.shape != score_pool3.shape:
+            upscore_pool4 = F.interpolate(
+                upscore_pool4,
+                size=score_pool3.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+
+        fuse_pool3 = upscore_pool4 + score_pool3
+
+        # 3) Upsampling final: 8 → 1 (resolución original)
+        out = self.upscore8(fuse_pool3)
+
+        if out.shape[2:] != input_size:
+            out = F.interpolate(
+                out,
+                size=input_size,
+                mode='bilinear',
+                align_corners=False
+            )
+
+        return out
+
 
 
 
@@ -2484,7 +2743,9 @@ def main(model_name=None):
         batch_size=config['batch_size'],  # 32 images per batch
         shuffle=True,  # Randomize order each epoch (prevents overfitting to sequence)
         num_workers=config.get('num_workers', 4),  # Parallel data loading (4-8 workers recommended)
-        pin_memory=True if torch.cuda.is_available() else False  # Faster GPU transfer
+        pin_memory=True if torch.cuda.is_available() else False,  # Faster GPU transfer
+        worker_init_fn=worker_init_fn,   # ← IMPORTANTÍSIMO
+        generator=g 
     )
     
     val_loader = DataLoader(
@@ -2492,7 +2753,9 @@ def main(model_name=None):
         batch_size=config['batch_size'],  # Same batch size as training
         shuffle=False,  # NO shuffling for validation (reproducible results)
         num_workers=config.get('num_workers', 4),
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=True if torch.cuda.is_available() else False,
+        worker_init_fn=worker_init_fn,
+        generator=g
     )
     
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
@@ -2511,6 +2774,9 @@ def main(model_name=None):
         model = DeepLabV3Plus(n_classes=config['n_classes'])  # State-of-the-art with ASPP
     elif config['model'] == 'minisam':
         model = MiniSAM(n_classes=config['n_classes'])  # Interactive model with prompts
+    elif config['model'] == 'fcn8s_kccs':
+        model = FCN8sKCCS(n_classes=config['n_classes'])
+
     else:
         raise ValueError(f"Unknown model: {config['model']}")
     
@@ -2777,7 +3043,7 @@ def compare_models():
         'Model Size (MB)': []
     }
     
-    models_to_compare = ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
+    models_to_compare = ['fcn32s', 'fcn16s', 'fcn8s', 'fcn8s_kccs', 'deeplabv3plus', 'minisam']
     n_classes = 21
     image_size = 256
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -2816,6 +3082,9 @@ def compare_models():
                 model = DeepLabV3Plus(n_classes=n_classes)
             elif model_name == 'minisam':
                 model = MiniSAM(n_classes=n_classes)
+            elif model_name == 'fcn8s_kccs':
+                model = FCN8sKCCS(n_classes=n_classes)
+
             
             model = model.to(device)
             
@@ -3032,63 +3301,95 @@ def compare_models():
 
 
 def interactive_minisam_demo():
-    """TRULY Interactive Mini-SAM demonstration with real-time user clicks.
+    """Interactive Mini-SAM demonstration with iterative prompt refinement.
     
-    This is a REAL interactive demo where you can click on the image to add prompts:
-    - Left click: Add foreground point (green star)
-    - Right click: Add background point (red X)
-    - Middle click or 'Enter': Run segmentation with current prompts
-    - Press 'r': Reset all prompts
-    - Press 'q': Quit demo
+    This demo simulates the interactive segmentation workflow of SAM-style models:
+    1. User provides initial prompts (points/boxes)
+    2. Model generates initial segmentation
+    3. Model predicts mask quality (IoU score)
+    4. User adds correction prompts
+    5. Model refines segmentation
+    6. Compare before/after results
     
     Demo Workflow:
-        [1/4] Load trained MiniSAM model (or use random weights)
-        [2/4] Load random test image from VOC validation set
-        [3/4] Display image and wait for user clicks
-        [4/4] Update segmentation in real-time as you add prompts
+        [1/7] Load trained MiniSAM model (or use random weights)
+        [2/7] Load random test image from VOC validation set
+        [3/7] Simulate initial user prompts:
+              - 2 foreground points (on object)
+              - 1 background point (on background)
+        [4/7] Run initial segmentation
+        [5/7] Visualize: Input | Prompts | Prediction (with IoU score)
+        [6/7] Add correction prompts:
+              - 1 additional foreground point
+              - 1 additional background point
+        [7/7] Run refined segmentation and compare
     
-    Interactive Controls:
-        - Click anywhere on the LEFT image to add prompts
-        - Watch the RIGHT side update with predictions
-        - Keep adding points to refine the segmentation
-        - Compare predicted IoU with actual results
+    Simulated Prompts:
+        Initial (3 points):
+        - (0.3, 0.3): Foreground (green star)
+        - (0.5, 0.5): Foreground (green star)
+        - (0.1, 0.1): Background (red X)
+        
+        Refinement (+2 points):
+        - (0.7, 0.7): Foreground
+        - (0.2, 0.8): Background
     
-    Visualization Layout:
-        Left: Input image with your prompts overlaid
-        Right: Current segmentation prediction + IoU score
+    Visualization Output:
+        2 rows, 3 columns:
+        Row 1 (Initial):
+        - Col 1: Input image
+        - Col 2: Image with initial prompts overlaid
+        - Col 3: Initial prediction (with predicted IoU)
+        
+        Row 2 (Refined):
+        - Col 1: Ground truth mask
+        - Col 2: Image with all prompts (initial + corrections)
+        - Col 3: Refined prediction (with updated IoU)
     
     Expected Behavior:
         - More prompts → better segmentation (higher IoU)
-        - IoU prediction correlates with actual mask quality
-        - You can iteratively refine until satisfied
+        - IoU prediction should correlate with actual mask quality
+        - Corrections fix errors from initial segmentation
+    
+    Real Interactive Implementation (not in this demo):
+        In a production system, you would:
+        1. Use matplotlib event handlers: fig.canvas.mpl_connect('button_press_event', ...)
+        2. Capture user clicks: event.xdata, event.ydata
+        3. Update prompts dynamically
+        4. Re-run model in real-time
+        5. Display updated segmentation immediately
+        6. Support box drawing (click-drag rectangle)
     
     Returns:
-        points_history (list): All points clicked during session
-        pred_masks (list): Predictions after each update
+        pred_mask_v1 (np.ndarray): Initial prediction mask
+        pred_mask_v2 (np.ndarray): Refined prediction mask
+    
+    Outputs:
+        - Saved visualization: minisam_interactive_demo.png
+        - Prints summary: IoU improvement from refinement
     
     Use Cases:
-        - Interactive annotation tool prototype
-        - Understanding prompt-based segmentation
-        - Demonstrating SAM-style models to stakeholders
-        - Quick annotation for few-shot learning
+        - Demonstrating interactive segmentation capabilities
+        - Understanding SAM-style prompt-based models
+        - Comparing with fully automatic methods (FCN, DeepLabV3+)
+        - Prototyping interactive annotation tools
     
-    Tips:
-        - Start with 1-2 foreground clicks on the object
-        - Add background clicks if model includes too much
-        - Use right-click corrections to fix errors
-        - Press Enter to see final result with current prompts
+    Insights:
+        - Interactive models require fewer training images (prompt provides strong signal)
+        - Trade-off: Better zero-shot but needs user input
+        - IoU head helps users decide if more prompts are needed
     """
-    # Task 7.2: Create TRULY interactive demo
+    # Task 7.2: Create interactive demo
     
     print("="*80)
-    print("INTERACTIVE MINI-SAM DEMO (REAL-TIME)")
+    print("INTERACTIVE MINI-SAM DEMO")
     print("="*80)
     
     # Define device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # 1. Load trained Mini-SAM model
-    print("\n[1/4] Loading Mini-SAM model...")
+    print("\n[1/7] Loading Mini-SAM model...")
     model = MiniSAM(n_classes=21)
     model = model.to(device)
     
@@ -3101,12 +3402,12 @@ def interactive_minisam_demo():
         print("✓ Loaded trained checkpoint")
     except Exception as e:
         print(f"⚠ Error loading checkpoint: {e}")
-        print("⚠ Using random weights (predictions will be random)")
+        print("⚠ Using random weights")
     
     model.eval()
     
     # 2. Load test image
-    print("\n[2/4] Loading test image...")
+    print("\n[2/7] Loading test image...")
     voc_path = os.path.join(script_dir, '..', '..', 'voc', 'VOC2012_train_val', 'VOC2012_train_val')
     val_dataset = VOCSegmentationDataset(
         root_dir=voc_path,
@@ -3120,8 +3421,36 @@ def interactive_minisam_demo():
     
     print(f"✓ Loaded test image {idx}")
     
+    # 3. Display image and use pre-defined points (simulating user clicks)
+    print("\n[3/7] Setting up prompts...")
+    
     # Prepare image for model
-    image_tensor = image.unsqueeze(0).to(device)
+    image_tensor = image.unsqueeze(0).to(device)  # Add batch dimension
+    
+    # Simulate initial user clicks (foreground and background points)
+    # These would normally come from user interaction
+    initial_points = torch.tensor([
+        [0.3, 0.3],  # Foreground point
+        [0.5, 0.5],  # Foreground point
+        [0.1, 0.1],  # Background point
+    ]).unsqueeze(0).to(device)  # Shape: (1, 3, 2)
+    
+    initial_labels = torch.tensor([1, 1, 0]).unsqueeze(0).to(device)  # Shape: (1, 3)
+    
+    print(f"✓ Initial prompts: {initial_points.shape[1]} points")
+    print(f"  - Foreground points: {(initial_labels == 1).sum().item()}")
+    print(f"  - Background points: {(initial_labels == 0).sum().item()}")
+    
+    # 4. Run model with point prompts
+    print("\n[4/7] Running initial segmentation...")
+    with torch.no_grad():
+        mask_logits_v1, iou_pred_v1 = model(image_tensor, initial_points, initial_labels)
+        pred_mask_v1 = mask_logits_v1.argmax(dim=1)[0].cpu().numpy()
+    
+    print(f"✓ Initial segmentation complete (Predicted IoU: {iou_pred_v1.item():.3f})")
+    
+    # 5. Display segmentation result
+    print("\n[5/7] Visualizing initial result...")
     
     # Denormalize image for display
     img_display = image.cpu()
@@ -3129,254 +3458,114 @@ def interactive_minisam_demo():
     img_display = img_display + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     img_display = torch.clamp(img_display, 0, 1).permute(1, 2, 0).numpy()
     
-    # 3. Setup interactive visualization
-    print("\n[3/4] Setting up interactive interface...")
-    print("\n" + "="*80)
-    print("CONTROLS:")
-    print("  - LEFT CLICK: Add foreground point (green star)")
-    print("  - RIGHT CLICK: Add background point (red X)")
-    print("  - MIDDLE CLICK or ENTER: Run segmentation")
-    print("  - Press 'r': Reset all points")
-    print("  - Press 'c': Clear last point")
-    print("  - Press 's': Save current result")
-    print("  - Press 'q' or close window: Quit")
-    print("="*80 + "\n")
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     
-    # Storage for user prompts
-    class InteractiveState:
-        def __init__(self):
-            self.fg_points = []  # List of (y, x) normalized coordinates
-            self.bg_points = []
-            self.pred_mask = None
-            self.iou_pred = None
-            self.history = []  # Track all predictions
+    # Row 1: Initial segmentation
+    axes[0, 0].imshow(img_display)
+    axes[0, 0].set_title('Input Image')
+    axes[0, 0].axis('off')
     
-    state = InteractiveState()
+    # Plot initial points
+    points_np = initial_points[0].cpu().numpy()
+    labels_np = initial_labels[0].cpu().numpy()
+    fg_points = points_np[labels_np == 1]
+    bg_points = points_np[labels_np == 0]
     
-    # Create figure with two subplots
-    fig, (ax_input, ax_output) = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle('Interactive Mini-SAM Demo - Click to add prompts!', fontsize=14, fontweight='bold')
+    axes[0, 1].imshow(img_display)
+    if len(fg_points) > 0:
+        axes[0, 1].scatter(fg_points[:, 1] * 256, fg_points[:, 0] * 256, 
+                          c='green', s=200, marker='*', edgecolors='white', linewidths=2,
+                          label='Foreground')
+    if len(bg_points) > 0:
+        axes[0, 1].scatter(bg_points[:, 1] * 256, bg_points[:, 0] * 256, 
+                          c='red', s=200, marker='x', linewidths=3,
+                          label='Background')
+    axes[0, 1].set_title(f'Initial Prompts ({len(points_np)} points)')
+    axes[0, 1].legend()
+    axes[0, 1].axis('off')
     
-    # Left: Input image with prompts
-    ax_input.imshow(img_display)
-    ax_input.set_title('Input Image + Your Prompts\n(Click here to add points)', fontsize=12)
-    ax_input.axis('off')
+    axes[0, 2].imshow(pred_mask_v1, cmap='tab20', vmin=0, vmax=20)
+    axes[0, 2].set_title(f'Initial Prediction (IoU: {iou_pred_v1.item():.3f})')
+    axes[0, 2].axis('off')
     
-    # Right: Prediction output
-    ax_output.imshow(img_display)
-    ax_output.set_title('Prediction (waiting for prompts...)', fontsize=12)
-    ax_output.axis('off')
+    # 6. Add correction points (simulating refinement)
+    print("\n[6/7] Adding correction points...")
+    
+    # Add more points to refine the segmentation
+    correction_points = torch.tensor([
+        [0.7, 0.7],  # Additional foreground
+        [0.2, 0.8],  # Additional background
+    ]).unsqueeze(0).to(device)
+    
+    correction_labels = torch.tensor([1, 0]).unsqueeze(0).to(device)
+    
+    # Combine with initial points
+    refined_points = torch.cat([initial_points, correction_points], dim=1)
+    refined_labels = torch.cat([initial_labels, correction_labels], dim=1)
+    
+    print(f"✓ Refined prompts: {refined_points.shape[1]} points")
+    print(f"  - Foreground points: {(refined_labels == 1).sum().item()}")
+    print(f"  - Background points: {(refined_labels == 0).sum().item()}")
+    
+    # 7. Re-run and display refined result
+    print("\n[7/7] Running refined segmentation...")
+    with torch.no_grad():
+        mask_logits_v2, iou_pred_v2 = model(image_tensor, refined_points, refined_labels)
+        pred_mask_v2 = mask_logits_v2.argmax(dim=1)[0].cpu().numpy()
+    
+    print(f"✓ Refined segmentation complete (Predicted IoU: {iou_pred_v2.item():.3f})")
+    print(f"  IoU improvement: {(iou_pred_v2.item() - iou_pred_v1.item()):.3f}")
+    
+    # Row 2: Refined segmentation
+    axes[1, 0].imshow(gt_mask.cpu().numpy(), cmap='tab20', vmin=0, vmax=20)
+    axes[1, 0].set_title('Ground Truth')
+    axes[1, 0].axis('off')
+    
+    # Plot refined points
+    points_np_refined = refined_points[0].cpu().numpy()
+    labels_np_refined = refined_labels[0].cpu().numpy()
+    fg_points_refined = points_np_refined[labels_np_refined == 1]
+    bg_points_refined = points_np_refined[labels_np_refined == 0]
+    
+    axes[1, 1].imshow(img_display)
+    if len(fg_points_refined) > 0:
+        axes[1, 1].scatter(fg_points_refined[:, 1] * 256, fg_points_refined[:, 0] * 256, 
+                          c='green', s=200, marker='*', edgecolors='white', linewidths=2,
+                          label='Foreground')
+    if len(bg_points_refined) > 0:
+        axes[1, 1].scatter(bg_points_refined[:, 1] * 256, bg_points_refined[:, 0] * 256, 
+                          c='red', s=200, marker='x', linewidths=3,
+                          label='Background')
+    axes[1, 1].set_title(f'Refined Prompts ({len(points_np_refined)} points)')
+    axes[1, 1].legend()
+    axes[1, 1].axis('off')
+    
+    axes[1, 2].imshow(pred_mask_v2, cmap='tab20', vmin=0, vmax=20)
+    axes[1, 2].set_title(f'Refined Prediction (IoU: {iou_pred_v2.item():.3f})')
+    axes[1, 2].axis('off')
     
     plt.tight_layout()
-    
-    def run_segmentation():
-        """Run model with current prompts and update display."""
-        if len(state.fg_points) == 0 and len(state.bg_points) == 0:
-            print("⚠ No prompts yet. Click on the image first!")
-            return
-        
-        # Combine foreground and background points
-        all_points = state.fg_points + state.bg_points
-        all_labels = [1] * len(state.fg_points) + [0] * len(state.bg_points)
-        
-        if len(all_points) == 0:
-            return
-        
-        # Convert to tensors
-        points_tensor = torch.tensor(all_points, dtype=torch.float32).unsqueeze(0).to(device)
-        labels_tensor = torch.tensor(all_labels, dtype=torch.long).unsqueeze(0).to(device)
-        
-        # Run model
-        with torch.no_grad():
-            mask_logits, iou_pred = model(image_tensor, points_tensor, labels_tensor)
-            pred_mask = mask_logits.argmax(dim=1)[0].cpu().numpy()
-        
-        state.pred_mask = pred_mask
-        state.iou_pred = iou_pred.item()
-        state.history.append((len(all_points), state.iou_pred))
-        
-        # Update output display
-        ax_output.clear()
-        ax_output.imshow(pred_mask, cmap='tab20', vmin=0, vmax=20)
-        ax_output.set_title(f'Prediction ({len(all_points)} points) | IoU: {state.iou_pred:.3f}', 
-                           fontsize=12, fontweight='bold')
-        ax_output.axis('off')
-        
-        print(f"✓ Segmentation updated: {len(state.fg_points)} fg + {len(state.bg_points)} bg points, IoU: {state.iou_pred:.3f}")
-        
-        fig.canvas.draw()
-    
-    def update_input_display():
-        """Redraw input image with current prompts."""
-        ax_input.clear()
-        ax_input.imshow(img_display)
-        
-        # Plot foreground points
-        if state.fg_points:
-            fg_arr = np.array(state.fg_points)
-            ax_input.scatter(fg_arr[:, 1] * 256, fg_arr[:, 0] * 256,
-                           c='lime', s=300, marker='*', edgecolors='white', linewidths=2,
-                           label=f'Foreground ({len(state.fg_points)})', zorder=10)
-        
-        # Plot background points
-        if state.bg_points:
-            bg_arr = np.array(state.bg_points)
-            ax_input.scatter(bg_arr[:, 1] * 256, bg_arr[:, 0] * 256,
-                           c='red', s=200, marker='x', linewidths=3,
-                           label=f'Background ({len(state.bg_points)})', zorder=10)
-        
-        total_points = len(state.fg_points) + len(state.bg_points)
-        ax_input.set_title(f'Input Image + Your Prompts ({total_points} total)\n(Click to add more)', 
-                          fontsize=12)
-        ax_input.axis('off')
-        if state.fg_points or state.bg_points:
-            ax_input.legend(loc='upper right', fontsize=10)
-        
-        fig.canvas.draw()
-    
-    def on_click(event):
-        """Handle mouse clicks on the image."""
-        # Only process clicks on the input axes
-        if event.inaxes != ax_input:
-            return
-        
-        if event.xdata is None or event.ydata is None:
-            return
-        
-        # Normalize coordinates to [0, 1]
-        x_norm = event.xdata / 256
-        y_norm = event.ydata / 256
-        
-        # Clamp to valid range
-        x_norm = np.clip(x_norm, 0, 1)
-        y_norm = np.clip(y_norm, 0, 1)
-        
-        # Left click: foreground
-        if event.button == 1:
-            state.fg_points.append([y_norm, x_norm])
-            print(f"→ Added FOREGROUND point at ({y_norm:.2f}, {x_norm:.2f})")
-            update_input_display()
-            run_segmentation()  # Auto-update
-        
-        # Right click: background
-        elif event.button == 3:
-            state.bg_points.append([y_norm, x_norm])
-            print(f"→ Added BACKGROUND point at ({y_norm:.2f}, {x_norm:.2f})")
-            update_input_display()
-            run_segmentation()  # Auto-update
-        
-        # Middle click: just run segmentation
-        elif event.button == 2:
-            run_segmentation()
-    
-    def on_key(event):
-        """Handle keyboard shortcuts."""
-        if event.key == 'r':
-            # Reset all points
-            state.fg_points.clear()
-            state.bg_points.clear()
-            state.pred_mask = None
-            state.iou_pred = None
-            print("\n🔄 Reset all points")
-            
-            update_input_display()
-            ax_output.clear()
-            ax_output.imshow(img_display)
-            ax_output.set_title('Prediction (waiting for prompts...)', fontsize=12)
-            ax_output.axis('off')
-            fig.canvas.draw()
-        
-        elif event.key == 'c':
-            # Clear last point
-            if state.fg_points:
-                removed = state.fg_points.pop()
-                print(f"⌫ Removed last foreground point: {removed}")
-                update_input_display()
-                run_segmentation()
-            elif state.bg_points:
-                removed = state.bg_points.pop()
-                print(f"⌫ Removed last background point: {removed}")
-                update_input_display()
-                run_segmentation()
-            else:
-                print("⚠ No points to remove")
-        
-        elif event.key == 's':
-            # Save current result
-            if state.pred_mask is not None:
-                save_path = os.path.join(script_dir, '..', '..', 
-                                        f'minisam_interactive_result_{len(state.fg_points)}fg_{len(state.bg_points)}bg.png')
-                
-                # Create summary figure
-                save_fig, save_axes = plt.subplots(1, 3, figsize=(15, 5))
-                
-                # Input with prompts
-                save_axes[0].imshow(img_display)
-                if state.fg_points:
-                    fg_arr = np.array(state.fg_points)
-                    save_axes[0].scatter(fg_arr[:, 1] * 256, fg_arr[:, 0] * 256,
-                                       c='lime', s=300, marker='*', edgecolors='white', linewidths=2)
-                if state.bg_points:
-                    bg_arr = np.array(state.bg_points)
-                    save_axes[0].scatter(bg_arr[:, 1] * 256, bg_arr[:, 0] * 256,
-                                       c='red', s=200, marker='x', linewidths=3)
-                save_axes[0].set_title(f'Input + Prompts ({len(state.fg_points)+len(state.bg_points)} points)')
-                save_axes[0].axis('off')
-                
-                # Ground truth
-                save_axes[1].imshow(gt_mask.cpu().numpy(), cmap='tab20', vmin=0, vmax=20)
-                save_axes[1].set_title('Ground Truth')
-                save_axes[1].axis('off')
-                
-                # Prediction
-                save_axes[2].imshow(state.pred_mask, cmap='tab20', vmin=0, vmax=20)
-                save_axes[2].set_title(f'Prediction (IoU: {state.iou_pred:.3f})')
-                save_axes[2].axis('off')
-                
-                plt.tight_layout()
-                save_fig.savefig(save_path, dpi=150, bbox_inches='tight')
-                plt.close(save_fig)
-                print(f"💾 Saved result to: {save_path}")
-            else:
-                print("⚠ No prediction to save yet")
-        
-        elif event.key == 'q':
-            # Quit
-            plt.close(fig)
-            print("\n👋 Closing demo...")
-        
-        elif event.key == 'enter':
-            # Manual segmentation trigger
-            run_segmentation()
-    
-    # Connect event handlers
-    fig.canvas.mpl_connect('button_press_event', on_click)
-    fig.canvas.mpl_connect('key_press_event', on_key)
-    
-    print("\n[4/4] Interactive mode ready! Start clicking on the LEFT image.")
-    print("      (Segmentation updates automatically after each click)\n")
-    
-    # Show the interactive window
+    demo_path = os.path.join(script_dir, '..', '..', 'minisam_interactive_demo.png')
+    plt.savefig(demo_path, dpi=150, bbox_inches='tight')
+    print(f"\nSaved demo visualization to '{demo_path}'")
     plt.show()
     
-    # Summary after closing
+    # Summary
     print("\n" + "="*80)
-    print("SESSION SUMMARY")
+    print("DEMO SUMMARY")
     print("="*80)
-    print(f"Total points added: {len(state.fg_points)} foreground + {len(state.bg_points)} background")
-    if state.history:
-        print(f"\nSegmentation history ({len(state.history)} updates):")
-        for i, (num_points, iou) in enumerate(state.history, 1):
-            print(f"  Update {i}: {num_points} points → IoU = {iou:.3f}")
-        
-        if len(state.history) > 1:
-            improvement = state.history[-1][1] - state.history[0][1]
-            print(f"\nTotal IoU improvement: {improvement:+.3f}")
-    else:
-        print("No segmentations were performed.")
+    print(f"Initial segmentation - Points: {initial_points.shape[1]}, IoU: {iou_pred_v1.item():.3f}")
+    print(f"Refined segmentation - Points: {refined_points.shape[1]}, IoU: {iou_pred_v2.item():.3f}")
+    print(f"Improvement: {(iou_pred_v2.item() - iou_pred_v1.item()):.3f}")
     print("="*80)
     
-    return state.fg_points, state.bg_points, state.history
+    print("\nNote: In a real interactive demo, you would:")
+    print("  1. Use matplotlib event handlers to capture user clicks")
+    print("  2. Update the visualization in real-time")
+    print("  3. Allow multiple refinement iterations")
+    print("  4. Support both point and box prompts")
+    
+    return pred_mask_v1, pred_mask_v2
 
 
 if __name__ == "__main__":
@@ -3398,8 +3587,8 @@ if __name__ == "__main__":
     # Set which operations to run
     TRAIN_MODELS = []  # List of models: ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
                               # Or use 'all' to train all models sequentially
-    RUN_COMPARISON = False     # Compare all trained models
-    RUN_INTERACTIVE_DEMO = True  # Run Mini-SAM interactive demo
+    RUN_COMPARISON = True     # Compare all trained models
+    RUN_INTERACTIVE_DEMO = False  # Run Mini-SAM interactive demo
     # =======================================================
     
     # Train models
