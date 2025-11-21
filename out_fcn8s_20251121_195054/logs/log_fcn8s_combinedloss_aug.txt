@@ -1,0 +1,23 @@
+2025-11-21 19:50:56,071 - INFO - ============================================================
+2025-11-21 19:50:56,071 - INFO - Entrenando fcn8s | Variante: combinedloss_aug
+2025-11-21 19:50:56,071 - INFO - ============================================================
+2025-11-21 19:50:56,417 - INFO - Parámetros: 23,710,367
+2025-11-21 19:50:56,417 - INFO - Epoch [1/100]
+2025-11-21 19:50:56,417 - INFO - Warm-up: LR = 0.000100
+2025-11-21 19:51:51,795 - INFO - Train Loss: 0.9670 | Train mIoU: 0.0865 | Val Loss: 0.7038 | Val mIoU: 0.2121 | Val PA: 0.8183 | LR: 0.000100
+2025-11-21 19:51:51,864 - INFO - ✓ Guardado mejor modelo con mIoU: 0.2121
+2025-11-21 19:51:51,864 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn8s_20251121_195054/best_fcn8s_combinedloss_aug_model.pth
+2025-11-21 19:51:51,864 - INFO - Epoch [2/100]
+2025-11-21 19:51:51,864 - INFO - Warm-up: LR = 0.000200
+2025-11-21 19:52:45,864 - INFO - Train Loss: 0.6774 | Train mIoU: 0.3252 | Val Loss: 0.6175 | Val mIoU: 0.3847 | Val PA: 0.8672 | LR: 0.000200
+2025-11-21 19:52:45,977 - INFO - ✓ Guardado mejor modelo con mIoU: 0.3847
+2025-11-21 19:52:45,977 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn8s_20251121_195054/best_fcn8s_combinedloss_aug_model.pth
+2025-11-21 19:52:45,977 - INFO - Epoch [3/100]
+2025-11-21 19:52:45,977 - INFO - Warm-up: LR = 0.000300
+2025-11-21 19:53:40,172 - INFO - Train Loss: 0.6399 | Train mIoU: 0.3922 | Val Loss: 0.6200 | Val mIoU: 0.3882 | Val PA: 0.8584 | LR: 0.000300
+2025-11-21 19:53:40,282 - INFO - ✓ Guardado mejor modelo con mIoU: 0.3882
+2025-11-21 19:53:40,282 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn8s_20251121_195054/best_fcn8s_combinedloss_aug_model.pth
+2025-11-21 19:53:40,282 - INFO - Epoch [4/100]
+2025-11-21 19:54:34,638 - INFO - Train Loss: 0.6020 | Train mIoU: 0.4567 | Val Loss: 0.6206 | Val mIoU: 0.3680 | Val PA: 0.8629 | LR: 0.000293
+2025-11-21 19:54:34,638 - INFO - Sin mejora por 1/30 épocas
+2025-11-21 19:54:34,638 - INFO - Epoch [5/100]
