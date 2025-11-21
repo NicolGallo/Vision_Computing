@@ -99,130 +99,6 @@ print(f"Using device: {device}")
 # ================== Part 1: FCN Architecture ==================
 
 
-
-class KCCSContextBlock(nn.Module):
-    """
-    Bloque de contexto KCCS para mapas de características 2D (B, C, H, W).
-
-    Divide el espacio de características en tres subespacios:
-        - S: semántico
-        - E: episódico
-        - I: intencional
-
-    Entre ellos aplica proyecciones 1x1 y afinidades tipo kernel gaussiano
-    por píxel, de forma muy parecida a la versión de GridWorld pero aquí
-    vectorizada en H×W.
-
-    Entrada / salida:
-        x:  [B, C, H, W]  (C = in_channels)
-        y:  [B, C, H, W]  (mismo shape, con residual: y = x + f_KCCS(x))
-    """
-    def __init__(self, in_channels, s_dim=64, e_dim=64, i_dim=64, sigma_min=0.5):
-        super().__init__()
-        self.s_dim = s_dim
-        self.e_dim = e_dim
-        self.i_dim = i_dim
-        self.sigma_min = sigma_min
-
-        # Proyección inicial a subespacios S, E, I (1x1 conv)
-        self.to_S = nn.Conv2d(in_channels, s_dim, kernel_size=1, bias=False)
-        self.to_E = nn.Conv2d(in_channels, e_dim, kernel_size=1, bias=False)
-        self.to_I = nn.Conv2d(in_channels, i_dim, kernel_size=1, bias=False)
-
-        # Proyecciones entre subespacios (por canal, compartidas en HxW)
-        self.W_e_to_s = nn.Conv2d(e_dim, s_dim, kernel_size=1, bias=False)
-        self.W_i_to_s = nn.Conv2d(i_dim, s_dim, kernel_size=1, bias=False)
-
-        self.W_s_to_e = nn.Conv2d(s_dim, e_dim, kernel_size=1, bias=False)
-        self.W_i_to_e = nn.Conv2d(i_dim, e_dim, kernel_size=1, bias=False)
-
-        self.W_s_to_i = nn.Conv2d(s_dim, i_dim, kernel_size=1, bias=False)
-        self.W_e_to_i = nn.Conv2d(e_dim, i_dim, kernel_size=1, bias=False)
-
-        # Sigmas (anchura del kernel) aprendibles, como en GridWorld
-        self.rho_s_e = nn.Parameter(torch.tensor(0.0))
-        self.rho_s_i = nn.Parameter(torch.tensor(0.0))
-        self.rho_e_i = nn.Parameter(torch.tensor(0.0))
-
-        # Proyección de vuelta a canales originales + residual
-        self.out_proj = nn.Conv2d(s_dim + e_dim + i_dim, in_channels, kernel_size=1)
-
-    def _sigma(self, rho):
-        # Evita sigma <= 0
-        return F.softplus(rho) + self.sigma_min
-
-    def _gauss_aff(self, a, b, sigma):
-        """
-        Kernel gaussiano por píxel:
-            a, b: [B, C, H, W]
-            sigma: escalar
-        Devuelve affinities: [B, 1, H, W]
-        """
-        diff = a - b
-        dist2 = torch.sum(diff * diff, dim=1, keepdim=True)  # suma en canales
-        return torch.exp(-dist2 / (sigma * sigma + 1e-8))
-
-    def forward(self, x):
-        # x: [B, C, H, W]
-        # Proyección a subespacios
-        S_prev = self.to_S(x)  # [B, s_dim, H, W]
-        E_prev = self.to_E(x)  # [B, e_dim, H, W]
-        I_prev = self.to_I(x)  # [B, i_dim, H, W]
-
-        # Proyecciones entre subespacios
-        S_from_E = self.W_e_to_s(E_prev)
-        S_from_I = self.W_i_to_s(I_prev)
-
-        E_from_S = self.W_s_to_e(S_prev)
-        E_from_I = self.W_i_to_e(I_prev)
-
-        I_from_S = self.W_s_to_i(S_prev)
-        I_from_E = self.W_e_to_i(E_prev)
-
-        # Sigmas
-        sigma_s_e = self._sigma(self.rho_s_e)
-        sigma_s_i = self._sigma(self.rho_s_i)
-        sigma_e_i = self._sigma(self.rho_e_i)
-
-        # Afinidades gaussianas (por píxel)
-        aff_ES = self._gauss_aff(S_prev, S_from_E, sigma_s_e)
-        aff_IS = self._gauss_aff(S_prev, S_from_I, sigma_s_i)
-
-        aff_SE = self._gauss_aff(E_prev, E_from_S, sigma_s_e)
-        aff_IE = self._gauss_aff(E_prev, E_from_I, sigma_e_i)
-
-        aff_SI = self._gauss_aff(I_prev, I_from_S, sigma_s_i)
-        aff_EI = self._gauss_aff(I_prev, I_from_E, sigma_e_i)
-
-        # Actualizaciones tipo GridWorld pero en 2D
-        S_new = torch.tanh(
-            S_prev
-            + aff_ES * self.W_e_to_s(E_prev)
-            + aff_IS * self.W_i_to_s(I_prev)
-        )
-
-        E_new = torch.tanh(
-            E_prev
-            + aff_SE * self.W_s_to_e(S_prev)
-            + aff_IE * self.W_i_to_e(I_prev)
-        )
-
-        I_new = torch.tanh(
-            I_prev
-            + aff_SI * self.W_s_to_i(S_prev)
-            + aff_EI * self.W_e_to_i(E_prev)
-        )
-
-        # Fusionar subespacios y proyectar de vuelta
-        out = torch.cat([S_new, E_new, I_new], dim=1)  # [B, s+e+i, H, W]
-        out = self.out_proj(out)                       # [B, C, H, W]
-
-        # Residual: no rompemos el backbone
-        return x + out
-
-
-
-
 class FCN32s(nn.Module):
     """Fully Convolutional Network without skip connections (baseline).
     
@@ -673,100 +549,6 @@ class FCN8s(nn.Module):
             weight[i, i, :, :] = filt
         return weight
     
-
-
-class FCN8sKCCS(FCN8s):
-    """
-    FCN-8s + bloque de contexto KCCS en el mapa de características más profundo (layer4).
-
-    Igual que tu FCN8s:
-        - Mismo backbone ResNet50
-        - Mismos skips pool3/pool4
-        - Mismos upsampling y score layers
-
-    Única diferencia:
-        - Antes de aplicar score_fr, pasamos x por un bloque KCCSContextBlock
-          que implementa la interacción S/E/I con kernels gaussianos.
-    """
-    def __init__(self, n_classes=21, kccs_dims=(64, 64, 64)):
-        super().__init__(n_classes=n_classes)
-        s_dim, e_dim, i_dim = kccs_dims
-
-        # Mapa profundo de ResNet50 layer4 tiene 2048 canales
-        self.kccs_block = KCCSContextBlock(
-            in_channels=2048,
-            s_dim=s_dim,
-            e_dim=e_dim,
-            i_dim=i_dim
-        )
-
-    def forward(self, x):
-        # Calc input size para el upsampling final
-        input_size = x.shape[2:]
-
-        # ENCODER (igual que FCN8s)
-        x = self.relu(self.bn1(self.conv1(x)))  # Stride 2
-        x = self.maxpool(x)                    # Stride 4
-        x = self.layer1(x)                     # Stride 4 (256 canales)
-
-        # SKIP 1: pool3 (layer2 output) - FINE DETAILS
-        pool3 = self.layer2(x)                 # Stride 8 (512 canales)
-
-        # SKIP 2: pool4 (layer3 output) - MID-LEVEL
-        pool4 = self.layer3(pool3)             # Stride 16 (1024 canales)
-
-        # Deepest layer - HIGH-LEVEL SEMANTICS
-        x = self.layer4(pool4)                 # Stride 32 (2048 canales)
-
-        # 🔵 AQUÍ entra KCCS: razonamiento S/E/I sobre el mapa profundo
-        x = self.kccs_block(x)                 # Mantiene shape: [B, 2048, H/32, W/32]
-
-        # SCORE LAYERS (igual que FCN8s)
-        score_fr = self.score_fr(x)            # Deep: stride 32
-        score_pool4 = self.score_pool4(pool4)  # Mid: stride 16
-        score_pool3 = self.score_pool3(pool3)  # Shallow: stride 8
-
-        # PROGRESSIVE UPSAMPLING (igual que FCN8s)
-
-        # 1) Fusion profunda: 32 → 16 + pool4
-        upscore2 = self.upscore2(score_fr)     # Upsample 32 → 16
-
-        if upscore2.shape != score_pool4.shape:
-            upscore2 = F.interpolate(
-                upscore2,
-                size=score_pool4.shape[2:],
-                mode='bilinear',
-                align_corners=False
-            )
-
-        fuse_pool4 = upscore2 + score_pool4
-
-        # 2) Fusion media: 16 → 8 + pool3
-        upscore_pool4 = self.upscore_pool4(fuse_pool4)  # 16 → 8
-
-        if upscore_pool4.shape != score_pool3.shape:
-            upscore_pool4 = F.interpolate(
-                upscore_pool4,
-                size=score_pool3.shape[2:],
-                mode='bilinear',
-                align_corners=False
-            )
-
-        fuse_pool3 = upscore_pool4 + score_pool3
-
-        # 3) Upsampling final: 8 → 1 (resolución original)
-        out = self.upscore8(fuse_pool3)
-
-        if out.shape[2:] != input_size:
-            out = F.interpolate(
-                out,
-                size=input_size,
-                mode='bilinear',
-                align_corners=False
-            )
-
-        return out
-
 
 
 
@@ -2774,8 +2556,6 @@ def main(model_name=None):
         model = DeepLabV3Plus(n_classes=config['n_classes'])  # State-of-the-art with ASPP
     elif config['model'] == 'minisam':
         model = MiniSAM(n_classes=config['n_classes'])  # Interactive model with prompts
-    elif config['model'] == 'fcn8s_kccs':
-        model = FCN8sKCCS(n_classes=config['n_classes'])
 
     else:
         raise ValueError(f"Unknown model: {config['model']}")
@@ -3043,7 +2823,7 @@ def compare_models():
         'Model Size (MB)': []
     }
     
-    models_to_compare = ['fcn32s', 'fcn16s', 'fcn8s', 'fcn8s_kccs', 'deeplabv3plus', 'minisam']
+    models_to_compare = ['fcn32s', 'fcn16s', 'fcn8s', 'deeplabv3plus', 'minisam']
     n_classes = 21
     image_size = 256
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -3082,8 +2862,6 @@ def compare_models():
                 model = DeepLabV3Plus(n_classes=n_classes)
             elif model_name == 'minisam':
                 model = MiniSAM(n_classes=n_classes)
-            elif model_name == 'fcn8s_kccs':
-                model = FCN8sKCCS(n_classes=n_classes)
 
             
             model = model.to(device)
