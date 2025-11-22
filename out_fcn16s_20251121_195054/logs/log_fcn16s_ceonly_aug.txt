@@ -1,0 +1,16 @@
+2025-11-22 01:44:50,129 - INFO - ============================================================
+2025-11-22 01:44:50,129 - INFO - Entrenando fcn16s | Variante: ceonly_aug
+2025-11-22 01:44:50,129 - INFO - ============================================================
+2025-11-22 01:44:50,532 - INFO - Parámetros: 24,031,226
+2025-11-22 01:44:50,533 - INFO - Epoch [1/100]
+2025-11-22 01:44:50,533 - INFO - Warm-up: LR = 0.000100
+2025-11-22 01:46:00,464 - INFO - Train Loss: 1.5207 | Train mIoU: 0.0895 | Val Loss: 0.7114 | Val mIoU: 0.2194 | Val PA: 0.8213 | LR: 0.000100
+2025-11-22 01:46:00,543 - INFO - ✓ Guardado mejor modelo con mIoU: 0.2194
+2025-11-22 01:46:00,543 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251121_195054/best_fcn16s_ceonly_aug_model.pth
+2025-11-22 01:46:00,543 - INFO - Epoch [2/100]
+2025-11-22 01:46:00,543 - INFO - Warm-up: LR = 0.000200
+2025-11-22 01:47:07,400 - INFO - Train Loss: 0.6112 | Train mIoU: 0.3266 | Val Loss: 0.4547 | Val mIoU: 0.3955 | Val PA: 0.8703 | LR: 0.000200
+2025-11-22 01:47:07,521 - INFO - ✓ Guardado mejor modelo con mIoU: 0.3955
+2025-11-22 01:47:07,521 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251121_195054/best_fcn16s_ceonly_aug_model.pth
+2025-11-22 01:47:07,521 - INFO - Epoch [3/100]
+2025-11-22 01:47:07,521 - INFO - Warm-up: LR = 0.000300

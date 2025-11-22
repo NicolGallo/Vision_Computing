@@ -1,0 +1,204 @@
+2025-11-22 04:02:43,440 - INFO - ============================================================
+2025-11-22 04:02:43,440 - INFO - Entrenando fcn16s | Variante: combinedloss_aug
+2025-11-22 04:02:43,440 - INFO - ============================================================
+2025-11-22 04:02:43,753 - INFO - Parámetros: 24,031,226
+2025-11-22 04:02:43,754 - INFO - Epoch [1/100]
+2025-11-22 04:02:43,754 - INFO - Warm-up: LR = 0.000100
+2025-11-22 04:03:38,966 - INFO - Train Loss: 0.9793 | Train mIoU: 0.0973 | Val Loss: 0.7017 | Val mIoU: 0.2307 | Val PA: 0.8253 | LR: 0.000100
+2025-11-22 04:03:39,037 - INFO - ✓ Guardado mejor modelo con mIoU: 0.2307
+2025-11-22 04:03:39,037 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:03:39,037 - INFO - Epoch [2/100]
+2025-11-22 04:03:39,037 - INFO - Warm-up: LR = 0.000200
+2025-11-22 04:04:33,033 - INFO - Train Loss: 0.6710 | Train mIoU: 0.3351 | Val Loss: 0.6138 | Val mIoU: 0.3904 | Val PA: 0.8676 | LR: 0.000200
+2025-11-22 04:04:33,145 - INFO - ✓ Guardado mejor modelo con mIoU: 0.3904
+2025-11-22 04:04:33,145 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:04:33,145 - INFO - Epoch [3/100]
+2025-11-22 04:04:33,145 - INFO - Warm-up: LR = 0.000300
+2025-11-22 04:05:27,356 - INFO - Train Loss: 0.6307 | Train mIoU: 0.4097 | Val Loss: 0.6145 | Val mIoU: 0.3989 | Val PA: 0.8597 | LR: 0.000300
+2025-11-22 04:05:27,467 - INFO - ✓ Guardado mejor modelo con mIoU: 0.3989
+2025-11-22 04:05:27,467 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:05:27,467 - INFO - Epoch [4/100]
+2025-11-22 04:06:21,504 - INFO - Train Loss: 0.5979 | Train mIoU: 0.4629 | Val Loss: 0.6037 | Val mIoU: 0.3946 | Val PA: 0.8721 | LR: 0.000293
+2025-11-22 04:06:21,505 - INFO - Sin mejora por 1/30 épocas
+2025-11-22 04:06:21,505 - INFO - Epoch [5/100]
+2025-11-22 04:07:15,649 - INFO - Train Loss: 0.5732 | Train mIoU: 0.4863 | Val Loss: 0.5717 | Val mIoU: 0.4167 | Val PA: 0.8714 | LR: 0.000271
+2025-11-22 04:07:15,764 - INFO - ✓ Guardado mejor modelo con mIoU: 0.4167
+2025-11-22 04:07:15,764 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:07:15,764 - INFO - Epoch [6/100]
+2025-11-22 04:08:09,920 - INFO - Train Loss: 0.5172 | Train mIoU: 0.4985 | Val Loss: 0.4276 | Val mIoU: 0.4049 | Val PA: 0.8610 | LR: 0.000238
+2025-11-22 04:08:09,920 - INFO - Sin mejora por 1/30 épocas
+2025-11-22 04:08:09,920 - INFO - Epoch [7/100]
+2025-11-22 04:09:04,220 - INFO - Train Loss: 0.3597 | Train mIoU: 0.4747 | Val Loss: 0.4209 | Val mIoU: 0.3942 | Val PA: 0.8464 | LR: 0.000196
+2025-11-22 04:09:04,220 - INFO - Sin mejora por 2/30 épocas
+2025-11-22 04:09:04,220 - INFO - Epoch [8/100]
+2025-11-22 04:09:58,450 - INFO - Train Loss: 0.2839 | Train mIoU: 0.5243 | Val Loss: 0.3404 | Val mIoU: 0.4548 | Val PA: 0.8848 | LR: 0.000150
+2025-11-22 04:09:58,563 - INFO - ✓ Guardado mejor modelo con mIoU: 0.4548
+2025-11-22 04:09:58,564 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:09:58,564 - INFO - Epoch [9/100]
+2025-11-22 04:10:52,842 - INFO - Train Loss: 0.2288 | Train mIoU: 0.5707 | Val Loss: 0.3222 | Val mIoU: 0.4648 | Val PA: 0.8894 | LR: 0.000104
+2025-11-22 04:10:52,958 - INFO - ✓ Guardado mejor modelo con mIoU: 0.4648
+2025-11-22 04:10:52,958 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:10:52,958 - INFO - Epoch [10/100]
+2025-11-22 04:11:47,098 - INFO - Train Loss: 0.1923 | Train mIoU: 0.6060 | Val Loss: 0.3114 | Val mIoU: 0.4810 | Val PA: 0.8960 | LR: 0.000062
+2025-11-22 04:11:47,209 - INFO - ✓ Guardado mejor modelo con mIoU: 0.4810
+2025-11-22 04:11:47,209 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:11:47,209 - INFO - Epoch [11/100]
+2025-11-22 04:12:41,379 - INFO - Train Loss: 0.1552 | Train mIoU: 0.6575 | Val Loss: 0.3151 | Val mIoU: 0.4851 | Val PA: 0.8950 | LR: 0.000029
+2025-11-22 04:12:41,494 - INFO - ✓ Guardado mejor modelo con mIoU: 0.4851
+2025-11-22 04:12:41,494 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:12:41,494 - INFO - Epoch [12/100]
+2025-11-22 04:13:35,531 - INFO - Train Loss: 0.1500 | Train mIoU: 0.6555 | Val Loss: 0.2980 | Val mIoU: 0.4989 | Val PA: 0.8984 | LR: 0.000007
+2025-11-22 04:13:35,643 - INFO - ✓ Guardado mejor modelo con mIoU: 0.4989
+2025-11-22 04:13:35,643 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:13:35,643 - INFO - Epoch [13/100]
+2025-11-22 04:14:29,799 - INFO - Train Loss: 0.1369 | Train mIoU: 0.6880 | Val Loss: 0.2993 | Val mIoU: 0.4994 | Val PA: 0.8990 | LR: 0.000300
+2025-11-22 04:14:29,911 - INFO - ✓ Guardado mejor modelo con mIoU: 0.4994
+2025-11-22 04:14:29,911 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:14:29,911 - INFO - Epoch [14/100]
+2025-11-22 04:15:24,421 - INFO - Train Loss: 0.1961 | Train mIoU: 0.5950 | Val Loss: 0.4234 | Val mIoU: 0.3960 | Val PA: 0.8538 | LR: 0.000298
+2025-11-22 04:15:24,421 - INFO - Sin mejora por 1/30 épocas
+2025-11-22 04:15:24,421 - INFO - Epoch [15/100]
+2025-11-22 04:16:18,638 - INFO - Train Loss: 0.2498 | Train mIoU: 0.5384 | Val Loss: 0.4476 | Val mIoU: 0.3897 | Val PA: 0.8553 | LR: 0.000293
+2025-11-22 04:16:18,639 - INFO - Sin mejora por 2/30 épocas
+2025-11-22 04:16:18,639 - INFO - Epoch [16/100]
+2025-11-22 04:17:13,084 - INFO - Train Loss: 0.2452 | Train mIoU: 0.5538 | Val Loss: 0.4277 | Val mIoU: 0.3932 | Val PA: 0.8613 | LR: 0.000284
+2025-11-22 04:17:13,084 - INFO - Sin mejora por 3/30 épocas
+2025-11-22 04:17:13,084 - INFO - Epoch [17/100]
+2025-11-22 04:18:07,318 - INFO - Train Loss: 0.2143 | Train mIoU: 0.5644 | Val Loss: 0.4049 | Val mIoU: 0.3975 | Val PA: 0.8672 | LR: 0.000271
+2025-11-22 04:18:07,319 - INFO - Sin mejora por 4/30 épocas
+2025-11-22 04:18:07,319 - INFO - Epoch [18/100]
+2025-11-22 04:19:01,816 - INFO - Train Loss: 0.1995 | Train mIoU: 0.6052 | Val Loss: 0.3974 | Val mIoU: 0.4279 | Val PA: 0.8771 | LR: 0.000256
+2025-11-22 04:19:01,816 - INFO - Sin mejora por 5/30 épocas
+2025-11-22 04:19:01,816 - INFO - Epoch [19/100]
+2025-11-22 04:19:56,123 - INFO - Train Loss: 0.1632 | Train mIoU: 0.6448 | Val Loss: 0.3731 | Val mIoU: 0.4456 | Val PA: 0.8786 | LR: 0.000238
+2025-11-22 04:19:56,123 - INFO - Sin mejora por 6/30 épocas
+2025-11-22 04:19:56,123 - INFO - Epoch [20/100]
+2025-11-22 04:20:50,619 - INFO - Train Loss: 0.1449 | Train mIoU: 0.6751 | Val Loss: 0.3631 | Val mIoU: 0.4608 | Val PA: 0.8833 | LR: 0.000218
+2025-11-22 04:20:50,620 - INFO - Sin mejora por 7/30 épocas
+2025-11-22 04:20:50,620 - INFO - Epoch [21/100]
+2025-11-22 04:21:45,040 - INFO - Train Loss: 0.1361 | Train mIoU: 0.6824 | Val Loss: 0.3772 | Val mIoU: 0.4515 | Val PA: 0.8808 | LR: 0.000196
+2025-11-22 04:21:45,040 - INFO - Sin mejora por 8/30 épocas
+2025-11-22 04:21:45,040 - INFO - Epoch [22/100]
+2025-11-22 04:22:39,319 - INFO - Train Loss: 0.1174 | Train mIoU: 0.7109 | Val Loss: 0.3880 | Val mIoU: 0.4502 | Val PA: 0.8809 | LR: 0.000174
+2025-11-22 04:22:39,319 - INFO - Sin mejora por 9/30 épocas
+2025-11-22 04:22:39,319 - INFO - Epoch [23/100]
+2025-11-22 04:23:33,501 - INFO - Train Loss: 0.1139 | Train mIoU: 0.7152 | Val Loss: 0.3590 | Val mIoU: 0.4726 | Val PA: 0.8885 | LR: 0.000150
+2025-11-22 04:23:33,501 - INFO - Sin mejora por 10/30 épocas
+2025-11-22 04:23:33,501 - INFO - Epoch [24/100]
+2025-11-22 04:24:27,758 - INFO - Train Loss: 0.1050 | Train mIoU: 0.7330 | Val Loss: 0.3720 | Val mIoU: 0.4724 | Val PA: 0.8926 | LR: 0.000127
+2025-11-22 04:24:27,759 - INFO - Sin mejora por 11/30 épocas
+2025-11-22 04:24:27,759 - INFO - Epoch [25/100]
+2025-11-22 04:25:21,988 - INFO - Train Loss: 0.0886 | Train mIoU: 0.7656 | Val Loss: 0.3557 | Val mIoU: 0.4887 | Val PA: 0.8962 | LR: 0.000104
+2025-11-22 04:25:21,988 - INFO - Sin mejora por 12/30 épocas
+2025-11-22 04:25:21,988 - INFO - Epoch [26/100]
+2025-11-22 04:26:16,271 - INFO - Train Loss: 0.0850 | Train mIoU: 0.7660 | Val Loss: 0.3609 | Val mIoU: 0.4963 | Val PA: 0.8968 | LR: 0.000082
+2025-11-22 04:26:16,271 - INFO - Sin mejora por 13/30 épocas
+2025-11-22 04:26:16,271 - INFO - Epoch [27/100]
+2025-11-22 04:27:10,816 - INFO - Train Loss: 0.0805 | Train mIoU: 0.7787 | Val Loss: 0.3540 | Val mIoU: 0.5008 | Val PA: 0.8983 | LR: 0.000062
+2025-11-22 04:27:10,925 - INFO - ✓ Guardado mejor modelo con mIoU: 0.5008
+2025-11-22 04:27:10,926 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:27:10,926 - INFO - Epoch [28/100]
+2025-11-22 04:28:05,069 - INFO - Train Loss: 0.0711 | Train mIoU: 0.7907 | Val Loss: 0.3563 | Val mIoU: 0.5059 | Val PA: 0.9000 | LR: 0.000044
+2025-11-22 04:28:05,179 - INFO - ✓ Guardado mejor modelo con mIoU: 0.5059
+2025-11-22 04:28:05,180 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:28:05,180 - INFO - Epoch [29/100]
+2025-11-22 04:28:59,012 - INFO - Train Loss: 0.0672 | Train mIoU: 0.8112 | Val Loss: 0.3598 | Val mIoU: 0.5120 | Val PA: 0.9015 | LR: 0.000029
+2025-11-22 04:28:59,128 - INFO - ✓ Guardado mejor modelo con mIoU: 0.5120
+2025-11-22 04:28:59,128 - INFO -    Path: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:28:59,128 - INFO - Epoch [30/100]
+2025-11-22 04:29:53,634 - INFO - Train Loss: 0.0628 | Train mIoU: 0.8152 | Val Loss: 0.3622 | Val mIoU: 0.5094 | Val PA: 0.9016 | LR: 0.000016
+2025-11-22 04:29:53,634 - INFO - Sin mejora por 1/30 épocas
+2025-11-22 04:29:53,634 - INFO - Epoch [31/100]
+2025-11-22 04:30:47,943 - INFO - Train Loss: 0.0653 | Train mIoU: 0.8059 | Val Loss: 0.3648 | Val mIoU: 0.5078 | Val PA: 0.9007 | LR: 0.000007
+2025-11-22 04:30:47,944 - INFO - Sin mejora por 2/30 épocas
+2025-11-22 04:30:47,944 - INFO - Epoch [32/100]
+2025-11-22 04:31:42,342 - INFO - Train Loss: 0.0655 | Train mIoU: 0.8103 | Val Loss: 0.3599 | Val mIoU: 0.5088 | Val PA: 0.9017 | LR: 0.000002
+2025-11-22 04:31:42,342 - INFO - Sin mejora por 3/30 épocas
+2025-11-22 04:31:42,342 - INFO - Epoch [33/100]
+2025-11-22 04:32:36,473 - INFO - Train Loss: 0.0642 | Train mIoU: 0.8111 | Val Loss: 0.3635 | Val mIoU: 0.5106 | Val PA: 0.9013 | LR: 0.000300
+2025-11-22 04:32:36,473 - INFO - Sin mejora por 4/30 épocas
+2025-11-22 04:32:36,473 - INFO - Epoch [34/100]
+2025-11-22 04:33:30,739 - INFO - Train Loss: 0.0884 | Train mIoU: 0.7719 | Val Loss: 0.4552 | Val mIoU: 0.4482 | Val PA: 0.8693 | LR: 0.000300
+2025-11-22 04:33:30,739 - INFO - Sin mejora por 5/30 épocas
+2025-11-22 04:33:30,739 - INFO - Epoch [35/100]
+2025-11-22 04:34:25,053 - INFO - Train Loss: 0.1240 | Train mIoU: 0.7063 | Val Loss: 0.4455 | Val mIoU: 0.4226 | Val PA: 0.8638 | LR: 0.000298
+2025-11-22 04:34:25,053 - INFO - Sin mejora por 6/30 épocas
+2025-11-22 04:34:25,053 - INFO - Epoch [36/100]
+2025-11-22 04:35:19,384 - INFO - Train Loss: 0.1483 | Train mIoU: 0.6568 | Val Loss: 0.4870 | Val mIoU: 0.4106 | Val PA: 0.8686 | LR: 0.000296
+2025-11-22 04:35:19,385 - INFO - Sin mejora por 7/30 épocas
+2025-11-22 04:35:19,385 - INFO - Epoch [37/100]
+2025-11-22 04:36:13,846 - INFO - Train Loss: 0.1468 | Train mIoU: 0.6674 | Val Loss: 0.4536 | Val mIoU: 0.3977 | Val PA: 0.8627 | LR: 0.000293
+2025-11-22 04:36:13,846 - INFO - Sin mejora por 8/30 épocas
+2025-11-22 04:36:13,846 - INFO - Epoch [38/100]
+2025-11-22 04:37:08,095 - INFO - Train Loss: 0.1432 | Train mIoU: 0.6771 | Val Loss: 0.4788 | Val mIoU: 0.3964 | Val PA: 0.8556 | LR: 0.000289
+2025-11-22 04:37:08,096 - INFO - Sin mejora por 9/30 épocas
+2025-11-22 04:37:08,096 - INFO - Epoch [39/100]
+2025-11-22 04:38:02,458 - INFO - Train Loss: 0.1348 | Train mIoU: 0.6820 | Val Loss: 0.4734 | Val mIoU: 0.4054 | Val PA: 0.8624 | LR: 0.000284
+2025-11-22 04:38:02,458 - INFO - Sin mejora por 10/30 épocas
+2025-11-22 04:38:02,458 - INFO - Epoch [40/100]
+2025-11-22 04:38:56,688 - INFO - Train Loss: 0.1199 | Train mIoU: 0.7058 | Val Loss: 0.4246 | Val mIoU: 0.4299 | Val PA: 0.8737 | LR: 0.000278
+2025-11-22 04:38:56,688 - INFO - Sin mejora por 11/30 épocas
+2025-11-22 04:38:56,688 - INFO - Epoch [41/100]
+2025-11-22 04:39:51,034 - INFO - Train Loss: 0.1140 | Train mIoU: 0.7247 | Val Loss: 0.4672 | Val mIoU: 0.4310 | Val PA: 0.8738 | LR: 0.000271
+2025-11-22 04:39:51,034 - INFO - Sin mejora por 12/30 épocas
+2025-11-22 04:39:51,034 - INFO - Epoch [42/100]
+2025-11-22 04:40:45,362 - INFO - Train Loss: 0.0976 | Train mIoU: 0.7384 | Val Loss: 0.4634 | Val mIoU: 0.4455 | Val PA: 0.8803 | LR: 0.000264
+2025-11-22 04:40:45,362 - INFO - Sin mejora por 13/30 épocas
+2025-11-22 04:40:45,362 - INFO - Epoch [43/100]
+2025-11-22 04:41:39,711 - INFO - Train Loss: 0.0873 | Train mIoU: 0.7694 | Val Loss: 0.4710 | Val mIoU: 0.4389 | Val PA: 0.8807 | LR: 0.000256
+2025-11-22 04:41:39,711 - INFO - Sin mejora por 14/30 épocas
+2025-11-22 04:41:39,711 - INFO - Epoch [44/100]
+2025-11-22 04:42:34,008 - INFO - Train Loss: 0.0936 | Train mIoU: 0.7539 | Val Loss: 0.4445 | Val mIoU: 0.4257 | Val PA: 0.8758 | LR: 0.000247
+2025-11-22 04:42:34,008 - INFO - Sin mejora por 15/30 épocas
+2025-11-22 04:42:34,008 - INFO - Epoch [45/100]
+2025-11-22 04:43:28,380 - INFO - Train Loss: 0.0881 | Train mIoU: 0.7555 | Val Loss: 0.4660 | Val mIoU: 0.4534 | Val PA: 0.8841 | LR: 0.000238
+2025-11-22 04:43:28,380 - INFO - Sin mejora por 16/30 épocas
+2025-11-22 04:43:28,380 - INFO - Epoch [46/100]
+2025-11-22 04:44:22,776 - INFO - Train Loss: 0.0880 | Train mIoU: 0.7676 | Val Loss: 0.4697 | Val mIoU: 0.4456 | Val PA: 0.8832 | LR: 0.000228
+2025-11-22 04:44:22,776 - INFO - Sin mejora por 17/30 épocas
+2025-11-22 04:44:22,776 - INFO - Epoch [47/100]
+2025-11-22 04:45:17,096 - INFO - Train Loss: 0.0791 | Train mIoU: 0.7688 | Val Loss: 0.4822 | Val mIoU: 0.4489 | Val PA: 0.8802 | LR: 0.000218
+2025-11-22 04:45:17,097 - INFO - Sin mejora por 18/30 épocas
+2025-11-22 04:45:17,097 - INFO - Epoch [48/100]
+2025-11-22 04:46:11,328 - INFO - Train Loss: 0.0765 | Train mIoU: 0.7831 | Val Loss: 0.4525 | Val mIoU: 0.4623 | Val PA: 0.8877 | LR: 0.000207
+2025-11-22 04:46:11,329 - INFO - Sin mejora por 19/30 épocas
+2025-11-22 04:46:11,329 - INFO - Epoch [49/100]
+2025-11-22 04:47:05,759 - INFO - Train Loss: 0.0664 | Train mIoU: 0.8074 | Val Loss: 0.4502 | Val mIoU: 0.4665 | Val PA: 0.8890 | LR: 0.000196
+2025-11-22 04:47:05,759 - INFO - Sin mejora por 20/30 épocas
+2025-11-22 04:47:05,759 - INFO - Epoch [50/100]
+2025-11-22 04:48:00,190 - INFO - Train Loss: 0.0636 | Train mIoU: 0.8166 | Val Loss: 0.4634 | Val mIoU: 0.4736 | Val PA: 0.8915 | LR: 0.000185
+2025-11-22 04:48:00,190 - INFO - Sin mejora por 21/30 épocas
+2025-11-22 04:48:00,190 - INFO - Epoch [51/100]
+2025-11-22 04:48:54,469 - INFO - Train Loss: 0.0550 | Train mIoU: 0.8286 | Val Loss: 0.4596 | Val mIoU: 0.4793 | Val PA: 0.8939 | LR: 0.000174
+2025-11-22 04:48:54,469 - INFO - Sin mejora por 22/30 épocas
+2025-11-22 04:48:54,469 - INFO - Epoch [52/100]
+2025-11-22 04:49:48,850 - INFO - Train Loss: 0.0562 | Train mIoU: 0.8263 | Val Loss: 0.4498 | Val mIoU: 0.4777 | Val PA: 0.8921 | LR: 0.000162
+2025-11-22 04:49:48,850 - INFO - Sin mejora por 23/30 épocas
+2025-11-22 04:49:48,850 - INFO - Epoch [53/100]
+2025-11-22 04:50:43,225 - INFO - Train Loss: 0.0547 | Train mIoU: 0.8269 | Val Loss: 0.4804 | Val mIoU: 0.4659 | Val PA: 0.8892 | LR: 0.000150
+2025-11-22 04:50:43,225 - INFO - Sin mejora por 24/30 épocas
+2025-11-22 04:50:43,226 - INFO - Epoch [54/100]
+2025-11-22 04:51:37,550 - INFO - Train Loss: 0.0545 | Train mIoU: 0.8310 | Val Loss: 0.4495 | Val mIoU: 0.4808 | Val PA: 0.8934 | LR: 0.000138
+2025-11-22 04:51:37,550 - INFO - Sin mejora por 25/30 épocas
+2025-11-22 04:51:37,550 - INFO - Epoch [55/100]
+2025-11-22 04:52:31,758 - INFO - Train Loss: 0.0535 | Train mIoU: 0.8446 | Val Loss: 0.4566 | Val mIoU: 0.4715 | Val PA: 0.8897 | LR: 0.000127
+2025-11-22 04:52:31,758 - INFO - Sin mejora por 26/30 épocas
+2025-11-22 04:52:31,758 - INFO - Epoch [56/100]
+2025-11-22 04:53:26,021 - INFO - Train Loss: 0.0516 | Train mIoU: 0.8470 | Val Loss: 0.4620 | Val mIoU: 0.4803 | Val PA: 0.8924 | LR: 0.000115
+2025-11-22 04:53:26,021 - INFO - Sin mejora por 27/30 épocas
+2025-11-22 04:53:26,021 - INFO - Epoch [57/100]
+2025-11-22 04:54:20,124 - INFO - Train Loss: 0.0435 | Train mIoU: 0.8650 | Val Loss: 0.4775 | Val mIoU: 0.4918 | Val PA: 0.8952 | LR: 0.000104
+2025-11-22 04:54:20,124 - INFO - Sin mejora por 28/30 épocas
+2025-11-22 04:54:20,124 - INFO - Epoch [58/100]
+2025-11-22 04:55:14,295 - INFO - Train Loss: 0.0465 | Train mIoU: 0.8591 | Val Loss: 0.4829 | Val mIoU: 0.4855 | Val PA: 0.8933 | LR: 0.000093
+2025-11-22 04:55:14,295 - INFO - Sin mejora por 29/30 épocas
+2025-11-22 04:55:14,295 - INFO - Epoch [59/100]
+2025-11-22 04:56:08,412 - INFO - Train Loss: 0.0418 | Train mIoU: 0.8635 | Val Loss: 0.4787 | Val mIoU: 0.4893 | Val PA: 0.8951 | LR: 0.000082
+2025-11-22 04:56:08,412 - INFO - Sin mejora por 30/30 épocas
+2025-11-22 04:56:08,412 - INFO - Early stopping activado.
+2025-11-22 04:56:08,412 - INFO - Entrenamiento finalizado. Mejor mIoU: 0.5120
+2025-11-22 04:56:08,744 - INFO - Saved training curves to /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/training_curves_fcn16s_combinedloss_aug.png
+2025-11-22 04:56:08,807 - INFO - Cargado checkpoint para reporte final: /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/best_fcn16s_combinedloss_aug_model.pth
+2025-11-22 04:56:08,807 - INFO - Generando métricas por clase...
+2025-11-22 04:56:33,919 - INFO - Saved per-class IoU barplot to /home/david/Vision/Vision_Computing/out_fcn16s_20251122_015151/per_class_iou_fcn16s_combinedloss_aug.png
+2025-11-22 04:56:33,919 - INFO - Generando predicciones de muestra...
