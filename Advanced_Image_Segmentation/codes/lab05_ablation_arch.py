@@ -695,7 +695,7 @@ def run_experiment(
         return
 
     logger.info("Generando métricas por clase...")
-    _, _, _, class_ious = validate(
+    final_miou, final_pa, final_loss, class_ious = validate(
         model,
         val_loader,
         config["device"],
@@ -743,6 +743,22 @@ def run_experiment(
     visualize_predictions(
         model, val_loader, config["device"], num_samples=4, save_path=predictions_path
     )
+
+    summary_path = os.path.join(base_out_dir, "summary_results.jsonl")
+    summary = {
+        "model": config["model"],
+        "best_miou": best_miou,
+        "eval_miou": final_miou,
+        "eval_pa": final_pa,
+        "eval_loss": final_loss,
+        "num_params": num_params,
+        "checkpoint": best_checkpoint_path,
+        "per_class_iou_path": per_class_path,
+        "predictions_path": predictions_path,
+    }
+    with open(summary_path, "a") as sf:
+        sf.write(json.dumps(summary) + "\n")
+    logger.info(f"Resumen guardado en {summary_path}")
 
 
 def parse_args():

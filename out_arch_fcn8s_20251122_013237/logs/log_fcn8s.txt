@@ -1,0 +1,15 @@
+2025-11-22 01:32:39,183 - INFO - Entrenando fcn8s | Backbone/Up: fcn8s
+2025-11-22 01:32:39,184 - INFO - ============================================================
+2025-11-22 01:32:39,715 - INFO - Parámetros: 23,710,367
+2025-11-22 01:32:39,716 - INFO - Epoch [1/100]
+2025-11-22 01:32:39,716 - INFO - Warm-up: LR = 0.000100
+2025-11-22 01:33:49,436 - INFO - Train Loss: 0.9670 | Train mIoU: 0.0865 | Val Loss: 0.7038 | Val mIoU: 0.2121 | Val PA: 0.8183 | LR: 0.000100
+2025-11-22 01:33:49,512 - INFO - ✓ Guardado mejor modelo con mIoU: 0.2121
+2025-11-22 01:33:49,512 - INFO -    Path: /home/david/Vision/Vision_Computing/out_arch_fcn8s_20251122_013237/best_fcn8s_model.pth
+2025-11-22 01:33:49,513 - INFO - Epoch [2/100]
+2025-11-22 01:33:49,513 - INFO - Warm-up: LR = 0.000200
+2025-11-22 01:34:58,686 - INFO - Train Loss: 0.6774 | Train mIoU: 0.3252 | Val Loss: 0.6175 | Val mIoU: 0.3847 | Val PA: 0.8672 | LR: 0.000200
+2025-11-22 01:34:58,810 - INFO - ✓ Guardado mejor modelo con mIoU: 0.3847
+2025-11-22 01:34:58,810 - INFO -    Path: /home/david/Vision/Vision_Computing/out_arch_fcn8s_20251122_013237/best_fcn8s_model.pth
+2025-11-22 01:34:58,810 - INFO - Epoch [3/100]
+2025-11-22 01:34:58,810 - INFO - Warm-up: LR = 0.000300
