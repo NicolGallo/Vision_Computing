@@ -1,17 +1,16 @@
 """
-Experimentos de ablación para FCN en VOC:
- - Ablación de función de pérdida: CombinedLoss vs CrossEntropy
- - Ablación de data augmentation: use_augmentation=True vs False
+Estudio 4: Ablaciones de Arquitectura para FCN8s
+- 4.1 Backbone: ResNet50 (base) vs ResNet18 (ligero)
+- 4.2 Upsampling: ConvTranspose2d (base) vs Upsample bilinear + Conv
 
-Se reutiliza el pipeline del laboratorio pero se eliminan MiniSAM y DeepLab,
-dejando solo FCN-32s/16s/8s.
+Incluye reproducibilidad, logging, métricas, figuras, carga segura de checkpoints
+con weights_only=True, y modo eval_only para usar checkpoints existentes.
 """
 
 import argparse
+import json
 import os
 import random
-import json
-import logging
 from typing import Dict, Tuple
 
 import matplotlib.pyplot as plt
@@ -38,7 +37,6 @@ torch.serialization.add_safe_globals([
     np.dtypes.Int32DType,
 ])
 
-
 # ===============================#
 #  Reproducibilidad global       #
 # ===============================#
@@ -51,12 +49,10 @@ torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-# Fuerza operaciones deterministas (puede desactivar algunos kernels rápidos)
 try:
     torch.use_deterministic_algorithms(True, warn_only=True)
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
 except Exception:
-    # En algunas versiones/hardware no está disponible; continuamos con best-effort.
     pass
 
 
@@ -74,23 +70,24 @@ print(f"Using device: {device}")
 
 
 # ================== Logging helpers ==================#
-def setup_logger(log_path: str) -> logging.Logger:
+def setup_logger(log_path: str):
+    import logging
+
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     logger = logging.getLogger(log_path)
     logger.setLevel(logging.INFO)
-    # Clear previous handlers if reused
     logger.handlers.clear()
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     fh = logging.FileHandler(log_path)
-    fh.setFormatter(formatter)
+    fh.setFormatter(fmt)
     sh = logging.StreamHandler()
-    sh.setFormatter(formatter)
+    sh.setFormatter(fmt)
     logger.addHandler(fh)
     logger.addHandler(sh)
     return logger
 
 
-# ================== FCN architectures ==================#
+# ================== FCN8s variants ==================#
 class _BilinearInitMixin:
     @staticmethod
     def _get_bilinear_filter(kernel_h: int, kernel_w: int, in_channels: int, out_channels: int) -> torch.Tensor:
@@ -112,101 +109,48 @@ class _BilinearInitMixin:
                 m.weight.data.copy_(weight)
 
 
-class FCN32s(_BilinearInitMixin, nn.Module):
+def _make_backbone(name: str):
+    if name == "resnet50":
+        resnet = models.resnet50(weights="DEFAULT")
+        c3, c4, c5 = 512, 1024, 2048
+    elif name == "resnet18":
+        resnet = models.resnet18(weights="DEFAULT")
+        c3, c4, c5 = 128, 256, 512
+    else:
+        raise ValueError(f"Backbone no soportado: {name}")
+    layers = {
+        "conv1": resnet.conv1,
+        "bn1": resnet.bn1,
+        "relu": resnet.relu,
+        "maxpool": resnet.maxpool,
+        "layer1": resnet.layer1,
+        "layer2": resnet.layer2,
+        "layer3": resnet.layer3,
+        "layer4": resnet.layer4,
+    }
+    return layers, (c3, c4, c5)
+
+
+class FCN8sResNet50(_BilinearInitMixin, nn.Module):
     def __init__(self, n_classes: int = 21):
         super().__init__()
-        resnet = models.resnet50(weights="DEFAULT")
-        self.conv1 = resnet.conv1
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
-        self.score_fr = nn.Conv2d(2048, n_classes, kernel_size=1)
-        self.upscore32 = nn.ConvTranspose2d(
-            n_classes, n_classes, kernel_size=64, stride=32, padding=16, bias=False
-        )
-        self._initialize_weights()
+        layers, (c3, c4, c5) = _make_backbone("resnet50")
+        self.conv1 = layers["conv1"]
+        self.bn1 = layers["bn1"]
+        self.relu = layers["relu"]
+        self.maxpool = layers["maxpool"]
+        self.layer1 = layers["layer1"]
+        self.layer2 = layers["layer2"]
+        self.layer3 = layers["layer3"]
+        self.layer4 = layers["layer4"]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_size = x.shape[2:]
-        x = self.maxpool(self.relu(self.bn1(self.conv1(x))))
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = self.score_fr(x)
-        x = self.upscore32(x)
-        if x.shape[2:] != input_size:
-            x = F.interpolate(x, size=input_size, mode="bilinear", align_corners=False)
-        return x
+        self.score_pool3 = nn.Conv2d(c3, n_classes, kernel_size=1)
+        self.score_pool4 = nn.Conv2d(c4, n_classes, kernel_size=1)
+        self.score_fr = nn.Conv2d(c5, n_classes, kernel_size=1)
 
-
-class FCN16s(_BilinearInitMixin, nn.Module):
-    def __init__(self, n_classes: int = 21):
-        super().__init__()
-        resnet = models.resnet50(weights="DEFAULT")
-        self.conv1 = resnet.conv1
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
-        self.score_pool4 = nn.Conv2d(1024, n_classes, kernel_size=1)
-        self.score_fr = nn.Conv2d(2048, n_classes, kernel_size=1)
-        self.upscore2 = nn.ConvTranspose2d(
-            n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False
-        )
-        self.upscore16 = nn.ConvTranspose2d(
-            n_classes, n_classes, kernel_size=32, stride=16, padding=8, bias=False
-        )
-        self._initialize_weights()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_size = x.shape[2:]
-        x = self.maxpool(self.relu(self.bn1(self.conv1(x))))
-        x = self.layer1(x)
-        x = self.layer2(x)
-        pool4 = self.layer3(x)
-        x = self.layer4(pool4)
-        score_fr = self.score_fr(x)
-        upscore2 = self.upscore2(score_fr)
-        pool4_score = self.score_pool4(pool4)
-        fuse = upscore2 + pool4_score
-        x = self.upscore16(fuse)
-        if x.shape[2:] != input_size:
-            x = F.interpolate(x, size=input_size, mode="bilinear", align_corners=False)
-        return x
-
-
-class FCN8s(_BilinearInitMixin, nn.Module):
-    def __init__(self, n_classes: int = 21):
-        super().__init__()
-        resnet = models.resnet50(weights="DEFAULT")
-        self.conv1 = resnet.conv1
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
-        self.score_pool3 = nn.Conv2d(512, n_classes, kernel_size=1)
-        self.score_pool4 = nn.Conv2d(1024, n_classes, kernel_size=1)
-        self.score_fr = nn.Conv2d(2048, n_classes, kernel_size=1)
-        self.upscore2 = nn.ConvTranspose2d(
-            n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False
-        )
-        self.upscore8 = nn.ConvTranspose2d(
-            n_classes, n_classes, kernel_size=16, stride=8, padding=4, bias=False
-        )
-        self.upscore2_pool4 = nn.ConvTranspose2d(
-            n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False
-        )
+        self.upscore2 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False)
+        self.upscore2_pool4 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=4, stride=2, padding=1, bias=False)
+        self.upscore8 = nn.ConvTranspose2d(n_classes, n_classes, kernel_size=16, stride=8, padding=4, bias=False)
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -216,17 +160,57 @@ class FCN8s(_BilinearInitMixin, nn.Module):
         pool3 = self.layer2(x)
         pool4 = self.layer3(pool3)
         x = self.layer4(pool4)
+
         score_fr = self.score_fr(x)
         upscore2 = self.upscore2(score_fr)
+
         pool4_score = self.score_pool4(pool4)
         fuse_pool4 = upscore2 + pool4_score
         upscore_pool4 = self.upscore2_pool4(fuse_pool4)
+
         pool3_score = self.score_pool3(pool3)
         fuse = upscore_pool4 + pool3_score
         x = self.upscore8(fuse)
         if x.shape[2:] != input_size:
             x = F.interpolate(x, size=input_size, mode="bilinear", align_corners=False)
         return x
+
+
+class FCN8sResNet18(FCN8sResNet50):
+    def __init__(self, n_classes: int = 21):
+        super().__init__(n_classes=n_classes)
+        layers, (c3, c4, c5) = _make_backbone("resnet18")
+        self.conv1 = layers["conv1"]
+        self.bn1 = layers["bn1"]
+        self.relu = layers["relu"]
+        self.maxpool = layers["maxpool"]
+        self.layer1 = layers["layer1"]
+        self.layer2 = layers["layer2"]
+        self.layer3 = layers["layer3"]
+        self.layer4 = layers["layer4"]
+
+        self.score_pool3 = nn.Conv2d(c3, n_classes, kernel_size=1)  # 128
+        self.score_pool4 = nn.Conv2d(c4, n_classes, kernel_size=1)  # 256
+        self.score_fr = nn.Conv2d(c5, n_classes, kernel_size=1)     # 512
+        self._initialize_weights()
+
+
+class FCN8sBilinear(FCN8sResNet50):
+    def __init__(self, n_classes: int = 21):
+        super().__init__(n_classes=n_classes)
+        # Reemplazar deconvs por Upsample + Conv para evitar artefactos
+        self.upscore2 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(n_classes, n_classes, kernel_size=3, padding=1, bias=False),
+        )
+        self.upscore2_pool4 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(n_classes, n_classes, kernel_size=3, padding=1, bias=False),
+        )
+        self.upscore8 = nn.Sequential(
+            nn.Upsample(scale_factor=8, mode="bilinear", align_corners=False),
+            nn.Conv2d(n_classes, n_classes, kernel_size=3, padding=1, bias=False),
+        )
 
 
 # ================== Losses ==================#
@@ -284,28 +268,23 @@ class CombinedLoss(nn.Module):
 
 
 # ================== Métricas ==================#
-def calculate_miou(pred: torch.Tensor, target: torch.Tensor, num_classes: int, ignore_index: int = 255) -> Tuple[float, np.ndarray]:
+def calculate_miou(pred: torch.Tensor, target: torch.Tensor, num_classes: int, ignore_index: int = 255):
     mask = target != ignore_index
     pred = torch.where(mask, pred, torch.full_like(pred, ignore_index))
-    pred = pred.cpu().numpy()
-    target = target.cpu().numpy()
+    pred_np = pred.cpu().numpy()
+    target_np = target.cpu().numpy()
     mask_np = mask.cpu().numpy()
-    pred = np.where(mask_np, pred, -1)
-    target = np.where(mask_np, target, -1)
+    pred_np = np.where(mask_np, pred_np, -1)
+    target_np = np.where(mask_np, target_np, -1)
     ious = []
     for c in range(num_classes):
-        pred_mask = pred == c
-        target_mask = target == c
-        intersection = np.logical_and(pred_mask, target_mask).sum()
-        union = np.logical_or(pred_mask, target_mask).sum()
-        if union == 0:
-            iou = float("nan")
-        else:
-            iou = intersection / union
-        ious.append(iou)
+        pm = pred_np == c
+        tm = target_np == c
+        inter = np.logical_and(pm, tm).sum()
+        union = np.logical_or(pm, tm).sum()
+        ious.append(float("nan") if union == 0 else inter / union)
     ious = np.array(ious)
-    miou = np.nanmean(ious)
-    return miou, ious
+    return np.nanmean(ious), ious
 
 
 def calculate_pixel_accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_index: int = 255) -> float:
@@ -318,14 +297,7 @@ def calculate_pixel_accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_in
 
 
 # ================== Entrenamiento y validación ==================#
-def train_epoch_fcn(
-    model: nn.Module,
-    dataloader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    criterion: nn.Module,
-    device: torch.device,
-    scaler: torch.amp.GradScaler = None,
-) -> Tuple[float, float]:
+def train_epoch(model, dataloader, optimizer, criterion, device, scaler=None):
     model.train()
     total_loss = 0.0
     total_miou = 0.0
@@ -352,14 +324,7 @@ def train_epoch_fcn(
     return total_loss / len(dataloader), total_miou / len(dataloader)
 
 
-def validate(
-    model: nn.Module,
-    dataloader: DataLoader,
-    device: torch.device,
-    num_classes: int,
-    criterion: nn.Module = None,
-    return_class_iou: bool = False,
-) -> Tuple[float, float, float, np.ndarray]:
+def validate(model, dataloader, device, num_classes, criterion=None, return_class_iou=False):
     model.eval()
     total_miou = 0.0
     total_pa = 0.0
@@ -382,30 +347,22 @@ def validate(
             pred_valid = torch.where(valid_mask, pred, torch.full_like(pred, -1))
             target_valid = torch.where(valid_mask, masks, torch.full_like(masks, -1))
             for c in range(num_classes):
-                pred_c = pred_valid == c
-                target_c = target_valid == c
-                intersections[c] += torch.logical_and(pred_c, target_c).sum().item()
-                unions[c] += torch.logical_or(pred_c, target_c).sum().item()
-
+                pc = pred_valid == c
+                tc = target_valid == c
+                intersections[c] += torch.logical_and(pc, tc).sum().item()
+                unions[c] += torch.logical_or(pc, tc).sum().item()
     class_ious = np.full(num_classes, np.nan)
     valid_union = unions > 0
     class_ious[valid_union] = intersections[valid_union] / unions[valid_union]
     avg_miou = total_miou / len(dataloader)
     avg_pa = total_pa / len(dataloader)
     avg_loss = total_loss / len(dataloader) if criterion is not None else float("nan")
-
     if return_class_iou:
         return avg_miou, avg_pa, avg_loss, class_ious
     return avg_miou, avg_pa, avg_loss, None
 
 
-def visualize_predictions(
-    model: nn.Module,
-    dataloader: DataLoader,
-    device: torch.device,
-    num_samples: int,
-    save_path: str,
-) -> None:
+def visualize_predictions(model, dataloader, device, num_samples, save_path):
     model.eval()
     with torch.no_grad():
         images_batch, masks_batch = next(iter(dataloader))
@@ -421,7 +378,6 @@ def visualize_predictions(
         )
         plt.show()
         fig.savefig(save_path, dpi=300, bbox_inches="tight")
-        print(f"Saved predictions to {save_path}")
 
 
 # ================== Dataset ==================#
@@ -522,18 +478,17 @@ class VOCSegmentationDataset(Dataset):
 # ================== Experimentos ==================#
 def build_model(name: str, n_classes: int) -> nn.Module:
     name = name.lower()
-    if name == "fcn32s":
-        return FCN32s(n_classes=n_classes)
-    if name == "fcn16s":
-        return FCN16s(n_classes=n_classes)
     if name == "fcn8s":
-        return FCN8s(n_classes=n_classes)
+        return FCN8sResNet50(n_classes=n_classes)
+    if name == "fcn8s_resnet18":
+        return FCN8sResNet18(n_classes=n_classes)
+    if name == "fcn8s_bilinear":
+        return FCN8sBilinear(n_classes=n_classes)
     raise ValueError(f"Modelo no soportado: {name}")
 
 
 def run_experiment(
     model_name: str,
-    variant: str,
     epochs: int,
     batch_size: int,
     image_size: int,
@@ -542,22 +497,6 @@ def run_experiment(
     output_dir: str = None,
     eval_only: bool = False,
 ) -> None:
-    variant = variant.lower()
-    if variant == "baseline":
-        criterion = CombinedLoss()
-        use_aug = True
-        variant_tag = "combinedloss_aug"
-    elif variant == "ce_only":
-        criterion = nn.CrossEntropyLoss(ignore_index=255)
-        use_aug = True
-        variant_tag = "ceonly_aug"
-    elif variant == "no_aug":
-        criterion = CombinedLoss()
-        use_aug = False
-        variant_tag = "combinedloss_noaug"
-    else:
-        raise ValueError(f"Variante no soportada: {variant}")
-
     config = {
         "model": model_name,
         "n_classes": 21,
@@ -571,21 +510,20 @@ def run_experiment(
         "use_amp": True,
         "weight_decay": 1e-4,
         "warmup_epochs": 3,
-        "use_augmentation": use_aug,
+        "use_augmentation": True,
     }
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_out_dir = os.path.abspath(output_dir) if output_dir else os.path.abspath(os.path.join(script_dir, "..", ".."))
     os.makedirs(base_out_dir, exist_ok=True)
     log_dir = os.path.join(base_out_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"log_{config['model']}_{variant_tag}.txt")
+    log_path = os.path.join(log_dir, f"log_{config['model']}.txt")
     logger = setup_logger(log_path)
 
-    logger.info("=" * 60)
     if eval_only:
-        logger.info(f"Evaluación (sin entrenamiento) de {config['model']} | Variante: {variant_tag}")
+        logger.info(f"Evaluación (sin entrenamiento) de {config['model']}")
     else:
-        logger.info(f"Entrenando {config['model']} | Variante: {variant_tag}")
+        logger.info(f"Entrenando {config['model']} | Backbone/Up: {config['model']}")
     logger.info("=" * 60)
 
     train_dataset = VOCSegmentationDataset(
@@ -623,16 +561,15 @@ def run_experiment(
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Parámetros: {num_params:,}")
 
+    criterion = CombinedLoss()
     best_miou = 0.0
-    best_checkpoint_path = os.path.join(
-        base_out_dir, f"best_{config['model']}_{variant_tag}_model.pth"
-    )
+    best_checkpoint_path = os.path.join(base_out_dir, f"best_{config['model']}_model.pth")
     train_losses: list[float] = []
     val_losses: list[float] = []
     val_mious: list[float] = []
     val_pas: list[float] = []
     lr_history: list[float] = []
-    metrics_path = os.path.join(base_out_dir, f"metrics_{config['model']}_{variant_tag}.jsonl")
+    metrics_path = os.path.join(base_out_dir, f"metrics_{config['model']}.jsonl")
 
     if not eval_only:
         optimizer = torch.optim.AdamW(
@@ -648,7 +585,6 @@ def run_experiment(
             eta_min=1e-7,
         )
         scaler = torch.amp.GradScaler("cuda") if config["use_amp"] and torch.cuda.is_available() else None
-
         patience = 30
         patience_counter = 0
 
@@ -660,15 +596,9 @@ def run_experiment(
                     param_group["lr"] = config["learning_rate"] * warmup_factor
                 logger.info(f"Warm-up: LR = {optimizer.param_groups[0]['lr']:.6f}")
 
-            train_loss, train_miou = train_epoch_fcn(
-                model, train_loader, optimizer, criterion, config["device"], scaler
-            )
+            train_loss, train_miou = train_epoch(model, train_loader, optimizer, criterion, config["device"], scaler)
             val_miou, val_pa, val_loss, _ = validate(
-                model,
-                val_loader,
-                config["device"],
-                num_classes=config["n_classes"],
-                criterion=criterion,
+                model, val_loader, config["device"], num_classes=config["n_classes"], criterion=criterion
             )
             if epoch >= config["warmup_epochs"]:
                 scheduler.step()
@@ -689,13 +619,11 @@ def run_experiment(
                             "val_miou": val_miou,
                             "val_pa": val_pa,
                             "lr": current_lr,
-                            "variant": variant_tag,
                             "model": config["model"],
                         }
                     )
                     + "\n"
                 )
-
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             val_mious.append(val_miou)
@@ -753,13 +681,10 @@ def run_experiment(
         ax_lr.legend()
 
         plt.tight_layout()
-        plot_path = os.path.join(
-            base_out_dir, f"training_curves_{config['model']}_{variant_tag}.png"
-        )
+        plot_path = os.path.join(base_out_dir, f"training_curves_{config['model']}.png")
         plt.savefig(plot_path, dpi=150)
         logger.info(f"Saved training curves to {plot_path}")
 
-    # Carga del mejor checkpoint para evaluación y generación de artefactos
     if os.path.exists(best_checkpoint_path):
         checkpoint = torch.load(best_checkpoint_path, map_location=config["device"])
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -808,149 +733,26 @@ def run_experiment(
     ax_iou.set_ylabel("IoU (%)")
     ax_iou.set_title("IoU por clase (validación)")
     ax_iou.grid(True, axis="y", alpha=0.3)
-    per_class_path = os.path.join(
-        base_out_dir, f"per_class_iou_{config['model']}_{variant_tag}.png"
-    )
+    per_class_path = os.path.join(base_out_dir, f"per_class_iou_{config['model']}.png")
     fig_iou.tight_layout()
     fig_iou.savefig(per_class_path, dpi=150)
     logger.info(f"Saved per-class IoU barplot to {per_class_path}")
 
-    predictions_path = os.path.join(
-        base_out_dir, f"predictions_{config['model']}_{variant_tag}.png"
-    )
+    predictions_path = os.path.join(base_out_dir, f"predictions_{config['model']}.png")
     logger.info("Generando predicciones de muestra...")
     visualize_predictions(
         model, val_loader, config["device"], num_samples=4, save_path=predictions_path
     )
 
 
-def _variant_to_tag(variant: str) -> str:
-    variant = variant.lower()
-    if variant == "baseline":
-        return "combinedloss_aug"
-    if variant == "ce_only":
-        return "ceonly_aug"
-    if variant == "no_aug":
-        return "combinedloss_noaug"
-    raise ValueError(f"Variante no soportada: {variant}")
-
-
-def _load_model_for_variant(
-    model_name: str, variant_tag: str, n_classes: int, device: torch.device, output_dir: str = None
-) -> nn.Module:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_out_dir = os.path.abspath(output_dir) if output_dir else os.path.abspath(os.path.join(script_dir, "..", ".."))
-    checkpoint_path = os.path.join(base_out_dir, f"best_{model_name}_{variant_tag}_model.pth")
-    if not os.path.exists(checkpoint_path):
-        print(f"⚠ No se encontró checkpoint para {model_name} ({variant_tag}) en {checkpoint_path}")
-        return None
-    model = build_model(model_name, n_classes).to(device)
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.eval()
-        print(f"✓ Cargado checkpoint: {checkpoint_path}")
-        return model
-    except Exception as exc:
-        print(f"⚠ Error cargando {checkpoint_path}: {exc}")
-        return None
-
-
-def compare_variants(
-    model_name: str,
-    variants: Tuple[str, str],
-    data_dir: str,
-    image_size: int,
-    batch_size: int,
-    n_classes: int = 21,
-    output_dir: str = None,
-) -> None:
-    variant_tags = [_variant_to_tag(v) for v in variants]
-    models_loaded = []
-    for tag in variant_tags:
-        model = _load_model_for_variant(model_name, tag, n_classes, device, output_dir=output_dir)
-        models_loaded.append(model)
-    if any(m is None for m in models_loaded):
-        print("✗ No se pudieron cargar todos los modelos; saliendo de la comparación.")
-        return
-
-    val_dataset = VOCSegmentationDataset(
-        root_dir=data_dir,
-        split="val",
-        image_size=image_size,
-        use_augmentation=False,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=min(8, os.cpu_count()),
-        pin_memory=torch.cuda.is_available(),
-        worker_init_fn=worker_init_fn,
-        generator=g,
-    )
-
-    images_batch, masks_batch = next(iter(val_loader))
-    images_batch = images_batch.to(device)
-    masks_batch = masks_batch.to(device)
-
-    idx = 0
-    image = images_batch[idx : idx + 1]
-    mask = masks_batch[idx]
-
-    predictions = []
-    for model in models_loaded:
-        with torch.no_grad():
-            logits = model(image)
-            pred = logits.argmax(dim=1)[0].cpu()
-            predictions.append(pred)
-
-    img_vis = image[0].cpu()
-    img_vis = img_vis * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    img_vis = img_vis + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    img_vis = torch.clamp(img_vis, 0, 1).permute(1, 2, 0).numpy()
-
-    fig, axes = plt.subplots(1, 2 + len(predictions), figsize=(5 * (2 + len(predictions)), 5))
-    axes[0].imshow(img_vis)
-    axes[0].set_title("Input")
-    axes[0].axis("off")
-
-    axes[1].imshow(mask.cpu(), cmap="tab20", vmin=0, vmax=n_classes - 1)
-    axes[1].set_title("Ground Truth")
-    axes[1].axis("off")
-
-    for i, pred in enumerate(predictions):
-        axes[2 + i].imshow(pred, cmap="tab20", vmin=0, vmax=n_classes - 1)
-        axes[2 + i].set_title(variant_tags[i])
-        axes[2 + i].axis("off")
-
-    plt.tight_layout()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_out_dir = os.path.abspath(output_dir) if output_dir else os.path.abspath(os.path.join(script_dir, "..", ".."))
-    os.makedirs(base_out_dir, exist_ok=True)
-    compare_path = os.path.join(
-        base_out_dir,
-        f"variant_comparison_{model_name}_{variant_tags[0]}_vs_{variant_tags[1]}.png",
-    )
-    plt.savefig(compare_path, dpi=150, bbox_inches="tight")
-    print(f"Saved variant comparison to {compare_path}")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ablaciones FCN en VOC")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Ablaciones de Arquitectura para FCN8s")
     parser.add_argument(
         "--model",
         type=str,
         default="fcn8s",
-        choices=["fcn32s", "fcn16s", "fcn8s"],
-        help="Variante FCN a entrenar",
-    )
-    parser.add_argument(
-        "--variant",
-        type=str,
-        default="baseline",
-        choices=["baseline", "ce_only", "no_aug"],
-        help="Experimento: baseline (CombinedLoss+aug), ce_only, no_aug",
+        choices=["fcn8s", "fcn8s_resnet18", "fcn8s_bilinear"],
+        help="Arquitectura a entrenar/evaluar",
     )
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -963,15 +765,10 @@ def parse_args() -> argparse.Namespace:
         help="Path al dataset VOC",
     )
     parser.add_argument(
-        "--compare_variants",
-        nargs=2,
-        metavar=("BASELINE_VARIANT", "ABLATION_VARIANT"),
-        help="Genera figura de comparación usando dos variantes ya entrenadas (p.ej. baseline ce_only)",
-    )
-    parser.add_argument(
-        "--run_all",
-        action="store_true",
-        help="Ejecuta secuencialmente baseline, ce_only y no_aug para el modelo indicado. Ideal para background.",
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Directorio donde guardar checkpoints, curvas, métricas y logs.",
     )
     parser.add_argument(
         "--eval_only",
@@ -979,30 +776,19 @@ def parse_args() -> argparse.Namespace:
         help="No entrena; carga el checkpoint existente y genera métricas/figuras.",
     )
     parser.add_argument(
-        "--output_dir",
-        type=str,
-        default=None,
-        help="Directorio donde guardar checkpoints, curvas, métricas y logs. Por defecto, la raíz del repo.",
+        "--run_all",
+        action="store_true",
+        help="Entrena/evalúa secuencialmente fcn8s, fcn8s_resnet18, fcn8s_bilinear.",
     )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.compare_variants:
-        compare_variants(
-            model_name=args.model,
-            variants=tuple(args.compare_variants),
-            data_dir=args.data_dir,
-            image_size=args.image_size,
-            batch_size=args.batch_size,
-            output_dir=args.output_dir,
-        )
-    elif args.run_all:
-        for variant in ("baseline", "ce_only", "no_aug"):
+    if args.run_all:
+        for m in ["fcn8s", "fcn8s_resnet18", "fcn8s_bilinear"]:
             run_experiment(
-                model_name=args.model,
-                variant=variant,
+                model_name=m,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 image_size=args.image_size,
@@ -1014,7 +800,6 @@ if __name__ == "__main__":
     else:
         run_experiment(
             model_name=args.model,
-            variant=args.variant,
             epochs=args.epochs,
             batch_size=args.batch_size,
             image_size=args.image_size,
