@@ -496,7 +496,7 @@ class MiniSAM(nn.Module):
         #    Extraer características hasta antes de la última capa
         #    MobileNetV3-Small tiene 12 bloques, usamos hasta el bloque 11 (índice -2)
         #    Esto nos da 96 canales de salida, no 576
-        self.image_encoder = nn.Sequential(*list(backbone.features)[:-2])
+        self.image_encoder = nn.Sequential(*list(backbone.features)[:-1]) ###################################################################################################
 
         # 3. Create projection: nn.Conv2d(96, embed_dim, 1) - Adjusted for correct channels
         #    Crear proyección de 96 -> embed_dim (ej. 256)
@@ -572,7 +572,7 @@ class MiniSAM(nn.Module):
         
         # Upsampling:
         # 3. nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False)
-        self.upsample = nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False)
+        self.upsample = nn.Upsample(scale_factor=16, mode='bilinear', align_corners=False)  ##################################################################################
         
     def encode_image(self, x):
         """Extract image features"""
@@ -647,10 +647,10 @@ class MiniSAM(nn.Module):
             prompt_enc = prompt_enc.view(B, self.embed_dim, 1, 1)
             
             #     - Expand to (B, embed_dim, H//8, W//8)
-            prompt_enc = prompt_enc.expand(B, self.embed_dim, H // 8, W // 8)
+            prompt_enc = prompt_enc.expand(B, self.embed_dim, H // 16, W // 16)  ####################################################################################################
         # 12. Else: create zero tensor of shape (B, embed_dim, H//8, W//8)
         else:
-            prompt_enc = torch.zeros(B, self.embed_dim, H // 8, W // 8, device=points.device if points is not None else boxes.device)
+            prompt_enc = torch.zeros(B, self.embed_dim, H // 16, W // 16, device=points.device if points is not None else boxes.device) ##############################################################################################
         
         # 13. Return prompt_enc
         return prompt_enc
@@ -746,11 +746,23 @@ def sample_points_from_mask(masks, n_points=5):
             #       - Randomly sample n_points//2 indices
             n_fg = n_points // 2
             sampled_idx = torch.randint(0, len(fg_indices), (n_fg,))
-            fg_points = fg_indices[sampled_idx].float()
+            
+            # --- INICIO DE LA CORRECCIÓN --- ##############################################################################################################################
+            
+            # 1. fg_points_yx tiene (Y, X)
+            fg_points_yx = fg_indices[sampled_idx].float()
+
+            # 2. Crea un nuevo tensor para (X_norm, Y_norm)
+            fg_points = torch.zeros_like(fg_points_yx)
             
             #       - Normalize to [0,1]: divide by [H, W]
-            fg_points[:, 0] /= H
-            fg_points[:, 1] /= W
+            # 3. Rellena (X_norm, Y_norm)
+            # Columna 0 (X_norm) = Columna 1 (X) de fg_points_yx / (W - 1)
+            fg_points[:, 0] = fg_points_yx[:,1] / (W - 1)
+            # Columna 1 (Y_norm) = Columna 0 (Y) de fg_points_yx / (H - 1)
+            fg_points[:, 1] = fg_points_yx[:,0] / (H - 1)
+
+            # --- FIN DE LA CORRECCIÓN ---##################################################################################################################################
             
             #       - Create labels as ones
             fg_labels = torch.ones(n_fg, dtype=torch.long, device=masks.device)
@@ -768,11 +780,23 @@ def sample_points_from_mask(masks, n_points=5):
             #       - Randomly sample n_points//2 indices
             n_bg = n_points - (n_points // 2)  # Remaining points
             sampled_idx = torch.randint(0, len(bg_indices), (n_bg,))
-            bg_points = bg_indices[sampled_idx].float()
+
+            # --- INICIO DE LA CORRECCIÓN --- ##############################################################################################################################
+            
+            # 1. fg_points_yx tiene (Y, X)
+            bg_points_yx = bg_indices[sampled_idx].float()
+
+            # 2. Crea un nuevo tensor para (X_norm, Y_norm)
+            bg_points = torch.zeros_like(bg_points_yx)
             
             #       - Normalize to [0,1]: divide by [H, W]
-            bg_points[:, 0] /= H
-            bg_points[:, 1] /= W
+             # 3. Rellena (X_norm, Y_norm)
+            # Columna 0 (X_norm) = Columna 1 (X) de fg_points_yx / (W - 1)
+            bg_points[:, 0] = bg_points_yx[:,1] / (W - 1)
+            # Columna 1 (Y_norm) = Columna 0 (Y) de fg_points_yx / (H - 1)
+            bg_points[:, 1] = bg_points_yx[:,0] / (H - 1)
+            
+            # --- FIN DE LA CORRECCIÓN ---##################################################################################################################################
             
             #       - Create labels as zeros
             bg_labels = torch.zeros(n_bg, dtype=torch.long, device=masks.device)
